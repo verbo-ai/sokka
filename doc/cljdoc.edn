@@ -1,0 +1,6 @@
+{:cljdoc.doc/tree
+ [["Readme" {:file "README.md"}]
+  ["Terminology" {:file "doc/terminology.md"}]
+  ["Getting Started" {:file "doc/getting-started.md"}
+   #_["Installation" {:file "doc/installation.md"}]]
+  #_["Configuration" {:file "doc/configuration.md"}]]}
