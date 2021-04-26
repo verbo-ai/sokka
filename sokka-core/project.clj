@@ -2,6 +2,9 @@
   :description "Task management and async utilities for Clojure"
   :url "https://github.com/verbo-ai/sokka"
 
+  :license {:name "Apache License 2.0"
+            :url "http://www.apache.org/licenses/LICENSE-2.0"}
+
   :dependencies [[org.clojure/clojure "1.10.1"]
                  [prismatic/schema "1.1.12"]
                  [clj-time "0.15.2"]
