@@ -1,4 +1,4 @@
-(defproject verbo/sokka-core (-> "../version" slurp .trim)
+(defproject ai.verbo/sokka-core (-> "../version" slurp .trim)
   :description "Task management and async utilities for Clojure"
   :url "https://github.com/verbo-ai/sokka"
 
