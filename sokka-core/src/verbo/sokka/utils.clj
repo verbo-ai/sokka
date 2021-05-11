@@ -54,10 +54,8 @@
   ([result]
    (query-results->paginated-response identity result))
   ([tf {:keys [last-evaluated-key items] :as e}]
-   (println e)
    (cond-> {:data (mapv tf items)}
      last-evaluated-key (assoc :cursor {:last-evaluated-key last-evaluated-key}))))
-
 
 (defn with-default-errors
   [f & args]
@@ -136,3 +134,19 @@
        (byte-buffer? val) (nippy/thaw (.array ^java.nio.HeapByteBuffer val) config)
        (byte-array? val)  (nippy/thaw val config)
        :else val))))
+
+
+(defn scroll
+  "Wraps the query function `qfn` supplied in a lazy sequence. `qfn`
+  must accept one argument `cursor` and return a map containing
+  keys :data and :cursor (next cursor). :data must be a collection. If
+  there are no more items to return, the :cursor must be nil."
+  ([qfn]
+   (scroll qfn {}))
+
+  ([qfn {:keys [limit next-page] :as cursor}]
+   (let [{data :data next-cursor :cursor} (qfn cursor)]
+     (into data
+       (if next-cursor
+         (lazy-seq (scroll qfn next-cursor))
+         nil)))))

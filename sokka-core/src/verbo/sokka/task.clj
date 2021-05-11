@@ -15,7 +15,7 @@
  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (def ^:const task-allowed-status-transitions
   {:starting #{:running  :failed :terminated}
-   :running  #{:failed  :snoozed  :terminated}
+   :running  #{:failed  :snoozed  :terminated :starting}
    :snoozed  #{:starting :failed :terminated}
    :failed   nil
    :terminated nil})
@@ -59,13 +59,11 @@
 
   (snooze! [this task-id pid snooze-time])
 
+  (wake! [this task-id])
+
+  (revoke-lease! [this task-id __ver])
+
   (fail! [this task-id pid error])
 
-  #_(update-status!
-      [this task-id status pid]
-      [this task-id status pid opts]
-      "Update status of the task with `task-id` to `status`.
-      Throws an exception with :error = :invalid-status if the
-      transition could not be made.
-      opts - optional parameters for specific statuses.
-      :snoozed - :snooze-time, long, time to snooze the task"))
+  (cleanup! [this topic pid]
+    "do some cleanup. This could be long running"))

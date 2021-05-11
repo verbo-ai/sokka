@@ -7,7 +7,8 @@
             [clojure.tools.logging :as log]
             [pandect.algo.sha256 :refer [sha256]]
             [verbo.sokka.task :refer :all]
-            [verbo.sokka.utils :as u :refer [now]])
+            [verbo.sokka.utils :as u :refer [now]]
+            [safely.core :refer [safely]])
   (:import com.amazonaws.services.dynamodbv2.model.ConditionalCheckFailedException))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -121,13 +122,14 @@
 
 (defn- ->returnable-item
   [task]
-  (dissoc  task :__topic-key
+  (dissoc task
+    :__topic-key
     :__topic-scan-hkey
     :__topic-scan-rkey
     :__ver))
 
 (def status-flags*
-  {:failed 400 :terminated 300 :running 200 :snoozed 200 :starting 100})
+  {:failed 400 :terminated 300 :running 200 :snoozed 150 :starting 100})
 
 (defn- status-flags
   [{:keys [status pid] :as task}]
@@ -230,10 +232,9 @@
 
 (defn- find-reservable-tasks
   "Queries the reservation index to find tasks that can be
-  reserved. This includes new tasks and tasks whose lease has already
-  expired."
+  reserved."
   [{:keys [creds tasks-table reservation-index] :as config} topic timestamp limit]
-  (let [reserve-key (format "%03d%020d" 200 timestamp)]
+  (let [reserve-key (format "%03d%s" 101 0)]
     (->> (dyn/query creds
            {:table-name tasks-table
             :index-name reservation-index
@@ -241,7 +242,7 @@
             :key-condition-expression
             "#topic = :topic AND #reserv < :reserved"
             :expression-attribute-values
-            {":topic" topic,
+            {":topic" (->topic-key topic :starting)
              ":reserved" reserve-key}
             :expression-attribute-names
             {"#reserv" "__reserv-key"
@@ -249,6 +250,29 @@
             :limit limit})
       :items
       (map parse-task*))))
+
+(defn- find-running-and-snoozed-tasks
+  "Queries the reservation index to find tasks that are running/snoozed."
+  [{:keys [creds tasks-table reservation-index] :as config} topic
+   {:keys [limit last-evaluated-key] :as cursor}]
+  (->> (cond-> {:table-name tasks-table
+                :index-name reservation-index
+                :select "ALL_ATTRIBUTES"
+                :key-condition-expression
+                "#topic = :topic  AND #reserv between :from AND :to"
+                :expression-attribute-values
+                {":topic" (->topic-key topic :running-or-snoozed) ;;FIXME: WTF dude!
+                 ":from" (format "%03d%020d" 150 0)
+                 ":to"   (format "%03d%020d" 201 0)}
+                :expression-attribute-names
+                {"#reserv" "__reserv-key"
+                 "#topic" "__topic-key"}
+                :limit limit}
+         last-evaluated-key (assoc :exclusive-start-key last-evaluated-key))
+    (dyn/query creds)
+    (u/query-results->paginated-response
+        parse-task*)))
+
 
 (defn- get-task-by-id
   [{:keys [creds tasks-table]} task-id]
@@ -342,8 +366,8 @@
         :else
         (update out :cursor assoc :next-period -1)))))
 
-(defn update-status!
-  [this task-id target-status pid {:keys [snooze-time error] :as opts}]
+(defn- update-status!
+  [this task-id target-status pid {:keys [snooze-time error __ver] :as opts}]
   (when-not (target-status task-statuses)
     (throw (ex-info "Invalid status."
              {:error :invalid-status
@@ -357,6 +381,10 @@
       (throw (ex-info "Task not found."
                {:error :task-not-found :task-id task-id})))
 
+    (when (and __ver (not= __ver (:__ver task)))
+      (throw (ex-info "Task not found."
+               {:error :task-not-found :task-id task-id})))
+
     (when-not (target-status allowed-transitions)
       (throw (ex-info "Invalid status transition requested."
                {:error :invalid-status-transition
@@ -365,10 +393,10 @@
                 :current-status status
                 :allowed allowed-transitions})))
 
-    (when-not (= status :snoozed)
+    (when-not (or (= status :snoozed) (= target-status :starting))
       ;; Perform pid check and check for lease validity for all
-      ;; transitions other than the ones that start from :paused or
-      ;; :snoozed
+      ;; transitions other than the ones that start from :snoozed or
+      ;; transition to :starting
       (when (not= pid (:pid task))
         (throw (ex-info "Cannot update status for a task that you don't own."
                  {:error :wrong-owner
@@ -387,14 +415,15 @@
 
 
     (cond-> (assoc task :status target-status)
-      (or  (= target-status :paused) (= target-status :terminated))
+      (or  (= target-status :starting) (= target-status :terminated))
       (-> (assoc :lease 0) (dissoc :pid))
 
       (= target-status :failed)
       (assoc :error (or error ""))
 
       (= target-status :snoozed)
-      (-> (assoc :lease (+ (now) (or snooze-time (:snooze-time this))))
+      (-> (assoc :snooze-time (or snooze-time (:snooze-time this))
+                 :lease (+ (now) (or snooze-time (:snooze-time this))))
         (dissoc :pid))
 
       :default
@@ -403,12 +432,60 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                                                                            ;;
+;;             ----==| G A R B A G E   C O L L E C T O R |==----              ;;
+;;                                                                            ;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(defn mark-task!
+  [m {:keys [lease-time]} {:keys [task-id __ver status snooze-time]}]
+  (if (= __ver (:__ver (get m task-id)))
+    m
+    (assoc m task-id
+      {:__ver __ver
+       :status status
+       :expiry (if (= status :snoozed)
+                 (+ (u/now) snooze-time)
+                 (+ (u/now) lease-time))})))
+
+(defn sweep-task!
+  [a {:keys [lease-time] :as task-service} task-id __ver]
+  (safely
+      (update-status! task-service task-id :starting nil {:__ver __ver})
+    :on-error
+    :max-retries 3
+    :log-level :debug
+    :tracking :disabled
+    :log-stacktrace false
+    :default nil
+    :retry-delay [:random-exp-backoff :base 500 :+/- 0.50])
+  (dissoc a task-id))
+
+(defn cleanup!*
+  [{:keys [monitored-tasks] :as task-service} topic]
+  (try
+    ;; mark everything
+    (doseq [task (u/scroll (partial find-running-and-snoozed-tasks task-service topic)
+                   {:limit 100})]
+      (send monitored-tasks mark-task! task-service task))
+    ;; sweep
+    (doseq [[task-id {:keys [__ver expiry]}] @monitored-tasks]
+      (when (> (u/now) expiry)
+        (send-off monitored-tasks sweep-task! task-service task-id __ver)))
+
+    (finally
+      (when (agent-error monitored-tasks)
+        (restart-agent monitored-tasks {})))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                                                                            ;;
 ;;           ---==| D Y A N M O D B   T A S K S   S T O R E |==----           ;;
 ;;                                                                            ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(defrecord DynamoTaskService
-    [creds tasks-table reservation-index lease-time snooze-time]
-
+(defrecord DynamoTaskService [monitored-tasks
+                              creds
+                              tasks-table
+                              reservation-index
+                              lease-time
+                              snooze-time]
   TaskService
 
   (create-task! [this {:keys [topic sub-topic task-group-id data] :as task-def}]
@@ -444,8 +521,7 @@
       (map ->returnable-item)))
 
   (reserve-task! [this topic pid]
-    (let [topic-key (->topic-key topic :starting)
-          task (first (find-reservable-tasks this topic-key (now) 1))
+    (let [task (first (find-reservable-tasks this topic (now) 1))
           lease-time (or lease-time DEFAULT_LEASE_TIME)]
 
       (when task
@@ -504,8 +580,13 @@
     (update-status! this task-id :snoozed pid {:snooze-time snooze-time}))
 
   (fail! [this task-id pid error]
-    (update-status! this task-id :failed pid {:error (str error)})))
+    (update-status! this task-id :failed pid {:error (str error)}))
+
+  (cleanup! [this topic pid]
+    (cleanup!* this topic)))
 
 (defn dyn-task-service
   [config]
-  (map->DynamoTaskService (merge DEFAULT-CONFIG config)))
+  (->> (assoc config :monitored-tasks (agent {}))
+    (merge DEFAULT-CONFIG)
+    (map->DynamoTaskService)))
