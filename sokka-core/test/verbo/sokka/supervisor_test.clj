@@ -21,47 +21,47 @@
     {:op   :do-something
      :with :something}}))
 
-(defn test-cleanup!
+(defn test-cleanup-leased-tasks!
   [task-service]
-  (fact "cleanup! changes the status of a task whose lease has expired to :starting"
+  (fact "cleanup-leased-tasks! changes the status of a task whose lease has expired to :starting"
     (let [monitored-tasks (agent {})
           pid (u/rand-id)
           topic (u/rand-id)
           task (task/create-task! task-service (new-task topic))]
       (:task-id (task/reserve-task! task-service topic pid)) => (:task-id task)
       ;; mark
-      (sut/cleanup! monitored-tasks task-service topic)
+      (sut/cleanup-leased-tasks! monitored-tasks task-service topic)
       (deref (promise) 500 :timeout)
 
       (let [ctime (u/now)]
         (with-redefs [u/now (constantly (+ ctime (:lease-time task-service) 1))]
           ;; sweep
-          (sut/cleanup! monitored-tasks task-service topic)
+          (sut/cleanup-leased-tasks! monitored-tasks task-service topic)
           (deref (promise) 500 :timeout)
           (task/task task-service (:task-id task)) => (every-checker
                                                         (contains {:status :starting})
                                                         #(nil? (:pid %)))))))
 
-  (fact "cleanup! does not change status of a task that has been updated between mark and sweep"
+  (fact "cleanup-leased-tasks! does not change status of a task that has been updated between mark and sweep"
     (let [monitored-tasks (agent {})
           pid (u/rand-id)
           topic (u/rand-id)
           task (task/create-task! task-service (new-task topic))]
       (:task-id (task/reserve-task! task-service topic pid)) => (:task-id task)
       ;; mark
-      (sut/cleanup! monitored-tasks task-service topic)
+      (sut/cleanup-leased-tasks! monitored-tasks task-service topic)
       (deref (promise) 500 :timeout)
 
       (let [ctime (u/now)]
         (with-redefs [u/now (constantly (+ ctime (:lease-time task-service) 1))]
           ;; sweep
-          (sut/cleanup! monitored-tasks task-service topic)
+          (sut/cleanup-leased-tasks! monitored-tasks task-service topic)
           (deref (promise) 500 :timeout)
           (task/task task-service (:task-id task)) => (every-checker
                                                         (contains {:status :starting})
                                                         #(nil? (:pid %)))))))
 
-  (fact "cleanup! changes the status of a snoozing task that is ready to wake to :starting"
+  (fact "cleanup-leased-tasks! changes the status of a snoozing task that is ready to wake to :starting"
     (let [monitored-tasks (agent {})
           pid (u/rand-id)
           topic (u/rand-id)
@@ -69,19 +69,19 @@
       (:task-id (task/reserve-task! task-service topic pid)) => (:task-id task)
       (task/snooze! task-service (:task-id task) pid (* 5 60 1000))
       ;; mark
-      (sut/cleanup! monitored-tasks task-service topic)
+      (sut/cleanup-leased-tasks! monitored-tasks task-service topic)
       (deref (promise) 500 :timeout)
 
       (let [ctime (u/now)]
         (with-redefs [u/now (constantly (+ ctime (* 5 60 1000) 1))]
           ;; sweep
-          (sut/cleanup! monitored-tasks task-service topic)
+          (sut/cleanup-leased-tasks! monitored-tasks task-service topic)
           (deref (promise) 500 :timeout)
           (:status (task/task task-service (:task-id task))) => :starting)))))
 
 (defn run-all-tests
   [task-service]
-  (test-cleanup! task-service))
+  (test-cleanup-leased-tasks! task-service))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                                                                            ;;

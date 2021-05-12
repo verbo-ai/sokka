@@ -28,7 +28,7 @@
     :retry-delay [:random-exp-backoff :base 500 :+/- 0.50])
   (dissoc a task-id))
 
-(defn cleanup!
+(defn cleanup-leased-tasks!
   [monitored-tasks task-service topic]
   (try
     ;; mark everything
@@ -36,7 +36,8 @@
                    {:limit 100})]
       (send monitored-tasks mark-task! task-service task))
     ;; sweep
-    (doseq [[task-id {:keys [record-ver expiry]}] @monitored-tasks]
+    (doseq [[task-id {:keys [record-ver expiry]}] (taoensso.timbre/spy :info
+                                                    @monitored-tasks)]
       (when (> (u/now) expiry)
         (send-off monitored-tasks sweep-task! task-service task-id record-ver)))
 
@@ -46,32 +47,3 @@
     (finally
       (when (agent-error monitored-tasks)
         (restart-agent monitored-tasks {})))))
-
-
-#_(defn lease-supervisor
-    [task-service topic {:keys [frequency-ms] :as opts}]
-    (let [close-chan  (async/chan 1)
-          p (promise)]
-      (future
-        (try
-          (loop [sleeper-fn nil]
-
-            (when sleeper-fn
-              (sleeper-fn))
-
-            (when-not (.closed? close-chan)
-
-              (when-not (.closed? close-chan)
-                (recur nil))
-
-              ))
-
-          (log/infof "Exiting lease supervisor :%s " pid)
-
-          (finally
-            (deliver p true)))
-
-
-        ))
-
-    )

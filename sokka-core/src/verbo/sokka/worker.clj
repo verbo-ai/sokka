@@ -1,11 +1,12 @@
 (ns verbo.sokka.worker
   (:require [verbo.sokka.task :as task]
+            [verbo.sokka.ctrl :refer :all]
             [clojure.tools.logging :as log]
             [clojure.core.async :as async :refer [go]]
-            [safely.core :refer [sleeper safely]]))
+            [safely.core :refer [sleeper safely]]
+            [verbo.sokka.supervisor :as supervisor]
+            [verbo.sokka.utils :as u]))
 
-
-(def ^:const DEFAULT-TASK-TIMEOUT (* 10 60 1000))
 (def ^:const DEFAULT-TASK-KEEPALIVE-TIME (* 3 60 1000))
 
 ;; ;; worker - polls a topic for tasks, and executes them by spinning up
@@ -16,49 +17,6 @@
 
 ;; ;; keepalive - a side car thread that extends lease of a task in
 ;; ;; regular intervals.
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;                                                                            ;;
-;;                       ----==| C O N T R O L |==----                        ;;
-;;                                                                            ;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(defprotocol Control
-  (abort! [this])
-  (close! [this])
-  (cleanup! [this]))
-
-(defrecord DefaultControl [close-chan abort-chan timeout-chan p]
-  clojure.lang.IDeref
-  (deref [_] (deref p))
-
-  clojure.lang.IBlockingDeref
-  (deref [_ timeout-ms timeout-val]
-    (deref p timeout-ms timeout-val))
-
-  Control
-  (close! [_] (when close-chan
-                (async/close! close-chan)
-                :closed))
-  (abort! [_] (when abort-chan
-                (async/close! abort-chan)
-                :aborted))
-  (cleanup! [this]
-    (close! this)
-    (abort! this)
-    nil))
-
-(prefer-method print-method clojure.lang.IPersistentMap clojure.lang.IDeref)
-(prefer-method print-method java.util.Map clojure.lang.IDeref)
-
-(defn new-control
-  ([] (new-control DEFAULT-TASK-TIMEOUT))
-
-  ([timeout-ms]
-   (->DefaultControl
-     (async/chan 1)
-     (async/chan 1)
-     (async/timeout timeout-ms)
-     (promise))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                                                                            ;;
@@ -268,6 +226,28 @@
          (->processor-fn task-service pid))
       task)))
 
+
+(defn- reserve-and-execute!
+  [{:keys [task-service topic pid pfn keepalive-ms timeout-ms max-poll-interval-ms] :as opts}]
+  (when-let [{:keys [task-id timeout-ms] :as task}
+             (reserve! task-service topic pid)]
+    (let [{:keys [timeout-ms] :as opts}
+          (cond-> opts
+            timeout-ms (assoc opts :timeout-ms timeout-ms))
+          ctrl (new-control timeout-ms)]
+      (log/infof "worker[%s]: reserved task %s:" topic
+        (pr-str task-id))
+      [ctrl (execute! opts ctrl task)])))
+
+(defn- cleanup-leased-tasks!
+  [{:keys [task-service monitored-tasks topic pid max-poll-interval-ms] :as opts} last-cleanup-time-ms]
+  (let [now (u/now)]
+    (if (> now (+ last-cleanup-time-ms max-poll-interval-ms))
+      (do
+        (supervisor/cleanup-leased-tasks! monitored-tasks task-service topic)
+        now)
+      last-cleanup-time-ms)))
+
 (defn worker
   "Polls the task service on the given `topic` for a task and when
   available, obtains a lease for the task, and calls processor
@@ -275,7 +255,7 @@
   argument. It also spins up a sidecar thread (keepalive) to extend
   the lease of the task periodically, while pfn is being executed.
 
-  `processor-fn` - should accept task as an argument, perform the
+  `processor-fn` - should accept task as an argument, perform thecleanup-leased-tasks
   operation corresponding to the task and return a tuple containing
   [event-name opts]. valid event-names and args are:
   [:sokka/completed nil], [:sokka/failed, {:keys [error-message]}]
@@ -294,12 +274,14 @@
   The worker polls for tasks using an exponentially increasing
   sleeper function to prevent the worker from flooding the queue with
   requests during inactivity."
-  [{:keys [task-service topic pid pfn keepalive-ms timeout-ms] :as opts}]
-  (let [opts (merge opts {:keepalive-ms
+  [{:keys [task-service topic pid pfn keepalive-ms timeout-ms max-poll-interval-ms] :as opts}]
+  (let [opts (merge opts {:monitored-tasks (agent {})
+                          :keepalive-ms
                           (-> task-service
                             :lease-time
                             (* 0.7)
                             int)
+                          :max-poll-interval-ms 30000
                           :timeout-ms
                           (-> task-service
                             :lease-time
@@ -308,41 +290,45 @@
         p           (promise)
         proc        (future
                       (try
-                        (loop [sleeper-fn nil]
+                        (loop [sleeper-fn nil
+                               last-cleanup-time-ms 0]
 
-                          (when sleeper-fn
-                            (sleeper-fn))
+                          (when sleeper-fn (sleeper-fn))
 
                           (when-not (.closed? close-chan)
-                            (if-let [{:keys [task-id timeout-ms] :as task}
-                                     (reserve! task-service topic pid)]
-                              (let [opts  (cond-> opts
-                                            timeout-ms (assoc opts :timeout-ms timeout-ms))
-                                    ctrl (new-control (:timeout-ms opts))]
-                                (log/infof "worker[%s]: reserved task %s:" topic
-                                  (pr-str task-id))
+                            (let [[ctrl ftr :as reserved] (taoensso.timbre/spy :info
+                                                            (reserve-and-execute! opts))
+                                  ;; this is the best opportunity to
+                                  ;; run cleanup (if
+                                  ;; max-poll-interval-ms has passed
+                                  ;; since last cleanup of-course),
+                                  ;; just before blocking on
+                                  ;; completion of the task that may
+                                  ;; have been reserved
+                                  last-cleanup-time-ms'
+                                  (cleanup-leased-tasks! opts last-cleanup-time-ms)]
+                              (if reserved
+                                (do
+                                  (try
+                                    (deref ftr (+ (:timeout-ms opts) 300)
+                                      :timed-out)
+                                    (catch Throwable t
+                                      (log/warnf t "worker[%s]: error waiting for task to complete"
+                                        topic)
+                                      (abort! ctrl))
+                                    (finally
+                                      (cleanup! ctrl)))
 
-                                (try
-                                  (deref (execute! opts ctrl task)
-                                    (+ (:timeout-ms opts) 300)
-                                    :timed-out)
+                                  (when-not (.closed? close-chan)
+                                    (recur nil last-cleanup-time-ms)))
 
-                                  (catch Throwable t
-                                    (log/warnf t "worker[%s]: error waiting for task to complete"
-                                      topic)
-                                    (abort! ctrl))
-                                  (finally
-                                    (cleanup! ctrl)))
-
-                                (when-not (.closed? close-chan)
-                                  (recur nil)))
-
-                              (if-not (.closed? close-chan)
-                                (recur
-                                  (or sleeper-fn
-                                    (sleeper
-                                      :random-exp-backoff
-                                      :base 300 :+/- 0.5 :max 30000)))))))
+                                (if-not (.closed? close-chan)
+                                  (recur
+                                    (or sleeper-fn
+                                      (sleeper
+                                        :random-exp-backoff
+                                        :base 300 :+/- 0.5 :max max-poll-interval-ms))
+                                    last-cleanup-time-ms))))))
 
                         (log/infof "Exiting worker :%s " pid)
 
@@ -353,25 +339,3 @@
       (async/close! close-chan)
       (.cancel proc true)
       p)))
-
-
-(comment
-
-  (def ftr (future
-             (try
-               (Thread/sleep (* 30 1000))
-               (catch Throwable t
-                 (println t))
-               (finally
-                 (println "Hello"))
-               )
-
-
-             ))
-
-  (.cancel ftr true)
-
-  (async/thread)
-
-
-  )
