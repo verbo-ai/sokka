@@ -126,7 +126,7 @@
     :__topic-key
     :__topic-scan-hkey
     :__topic-scan-rkey
-    :__ver))
+    :record-ver))
 
 (def status-flags*
   {:failed 400 :terminated 300 :running 200 :snoozed 150 :starting 100})
@@ -183,7 +183,7 @@
   [{:keys [status sub-topic topic lease pid] :or {lease 0} :as task}]
   (as-> task $
     ;; ver is used for Multiversion Concurrency Control and optimistic lock
-    (update $ :__ver (fnil inc 0))
+    (update $ :record-ver (fnil inc 0))
 
     ;; ensure that lease is always populated
     (update $ :lease (fnil identity 0))
@@ -207,10 +207,10 @@
   "This function uses MVCC to ensure that updates are not conflicting
    with other concurrent updates, causing data to be overwritten."
   {:style/indent 1}
-  [{:keys [creds tasks-table] :as aws-config} {:keys [__ver] :as item}]
+  [{:keys [creds tasks-table] :as aws-config} {:keys [record-ver] :as item}]
   (let [updated-item (inject-derived-attributes item)]
     ;; checking whether it is a first-time insert or update
-    (if-not __ver
+    (if-not record-ver
       ;; if it is a first time insert then no item with the same id should
       ;; already exists
       (dyn/put-item
@@ -220,14 +220,14 @@
         :condition-expression "attribute_not_exists(#taskid)"
         :expression-attribute-names {"#taskid" "task-id"})
       ;; if it is performing an update then the condition is that
-      ;; __ver must be unchanged in the db (no concurrent updates)
+      ;; record-ver must be unchanged in the db (no concurrent updates)
       (dyn/put-item
         creds
         :table-name tasks-table
         :item updated-item
         :condition-expression "#curver = :oldver"
-        :expression-attribute-names {"#curver" "__ver"}
-        :expression-attribute-values {":oldver" __ver}))
+        :expression-attribute-names {"#curver" "record-ver"}
+        :expression-attribute-values {":oldver" record-ver}))
     updated-item))
 
 (defn- find-reservable-tasks
@@ -367,7 +367,7 @@
         (update out :cursor assoc :next-period -1)))))
 
 (defn- update-status!
-  [this task-id target-status pid {:keys [snooze-time error __ver] :as opts}]
+  [this task-id target-status pid {:keys [snooze-time error record-ver] :as opts}]
   (when-not (target-status task-statuses)
     (throw (ex-info "Invalid status."
              {:error :invalid-status
@@ -381,7 +381,7 @@
       (throw (ex-info "Task not found."
                {:error :task-not-found :task-id task-id})))
 
-    (when (and __ver (not= __ver (:__ver task)))
+    (when (and record-ver (not= record-ver (:record-ver task)))
       (throw (ex-info "Task not found."
                {:error :task-not-found :task-id task-id})))
 
@@ -430,50 +430,6 @@
       (->> (safe-put-item this)
         ->returnable-item))))
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;                                                                            ;;
-;;             ----==| G A R B A G E   C O L L E C T O R |==----              ;;
-;;                                                                            ;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(defn mark-task!
-  [m {:keys [lease-time]} {:keys [task-id __ver status snooze-time]}]
-  (if (= __ver (:__ver (get m task-id)))
-    m
-    (assoc m task-id
-      {:__ver __ver
-       :status status
-       :expiry (if (= status :snoozed)
-                 (+ (u/now) snooze-time)
-                 (+ (u/now) lease-time))})))
-
-(defn sweep-task!
-  [a {:keys [lease-time] :as task-service} task-id __ver]
-  (safely
-      (update-status! task-service task-id :starting nil {:__ver __ver})
-    :on-error
-    :max-retries 3
-    :log-level :debug
-    :tracking :disabled
-    :log-stacktrace false
-    :default nil
-    :retry-delay [:random-exp-backoff :base 500 :+/- 0.50])
-  (dissoc a task-id))
-
-(defn cleanup!*
-  [{:keys [monitored-tasks] :as task-service} topic]
-  (try
-    ;; mark everything
-    (doseq [task (u/scroll (partial find-running-and-snoozed-tasks task-service topic)
-                   {:limit 100})]
-      (send monitored-tasks mark-task! task-service task))
-    ;; sweep
-    (doseq [[task-id {:keys [__ver expiry]}] @monitored-tasks]
-      (when (> (u/now) expiry)
-        (send-off monitored-tasks sweep-task! task-service task-id __ver)))
-
-    (finally
-      (when (agent-error monitored-tasks)
-        (restart-agent monitored-tasks {})))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                                                                            ;;
@@ -570,6 +526,9 @@
         (update task :lease (fn [ol] (max ol (+ (now) lease-time)))))
       :ok))
 
+  (revoke-lease! [this task-id record-ver]
+    (update-status! this task-id :starting nil {:record-ver record-ver}))
+
   (list-tasks [this topic {:keys [from to sub-topic] :as filters} {:keys [limit] :as cursor}]
     (list-tasks* this filters cursor))
 
@@ -582,11 +541,12 @@
   (fail! [this task-id pid error]
     (update-status! this task-id :failed pid {:error (str error)}))
 
-  (cleanup! [this topic pid]
-    (cleanup!* this topic)))
+  LeaseSupervision
+
+  (list-leased-tasks [this topic cursor]
+    (find-running-and-snoozed-tasks this topic cursor)))
 
 (defn dyn-task-service
   [config]
-  (->> (assoc config :monitored-tasks (agent {}))
-    (merge DEFAULT-CONFIG)
-    (map->DynamoTaskService)))
+  (map->DynamoTaskService
+    (merge DEFAULT-CONFIG config)))

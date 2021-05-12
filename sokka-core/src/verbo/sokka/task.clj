@@ -59,11 +59,11 @@
 
   (snooze! [this task-id pid snooze-time])
 
-  (wake! [this task-id])
+  (revoke-lease! [this task-id record-ver])
 
-  (revoke-lease! [this task-id __ver])
+  (fail! [this task-id pid error]))
 
-  (fail! [this task-id pid error])
 
-  (cleanup! [this topic pid]
-    "do some cleanup. This could be long running"))
+(defprotocol LeaseSupervision
+  (list-leased-tasks [this topic cursor]
+    "List all running / snoozed tasks"))

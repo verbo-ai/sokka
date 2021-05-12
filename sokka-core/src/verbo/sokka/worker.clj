@@ -291,7 +291,7 @@
   carries on. If the task completes successfully, it acknowledges the
   task with status = :ok and carries on.
 
-  The worker polls for tasks using an exponentionally increasing
+  The worker polls for tasks using an exponentially increasing
   sleeper function to prevent the worker from flooding the queue with
   requests during inactivity."
   [{:keys [task-service topic pid pfn keepalive-ms timeout-ms] :as opts}]
@@ -326,6 +326,7 @@
                                   (deref (execute! opts ctrl task)
                                     (+ (:timeout-ms opts) 300)
                                     :timed-out)
+
                                   (catch Throwable t
                                     (log/warnf t "worker[%s]: error waiting for task to complete"
                                       topic)
@@ -369,6 +370,8 @@
              ))
 
   (.cancel ftr true)
+
+  (async/thread)
 
 
   )

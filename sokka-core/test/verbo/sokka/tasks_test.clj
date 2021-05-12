@@ -189,7 +189,6 @@
           (:status utask) => :snoozed
           (keys utask) => (contains TASK_KEYS :in-any-order :gaps-ok))))))
 
-;; TODO:: fix these tests....
 (defn test-snoozing!
   [task-service]
   (let [topic (u/rand-id)
@@ -203,16 +202,10 @@
           (:status (task/task task-service task-id)) => :snoozed
           (task/reserve-task! task-service topic pid) => nil)
 
-        #_(fact "snoozed task can be reserved after the snooze time is elapsed"
-            (let [ctime (+ (u/now) 30001)]
-              (with-redefs [u/now (constantly ctime)]
-                (:task-id (task/reserve-task! task-service topic pid)) => task-id)))
-
-        #_(fact "snoozed task can be reserved by other pids after soonze time is elapsed"
-            (task/snooze! task-service task-id pid 30000)
-            (let [ctime (+ (u/now) 30001)]
-              (with-redefs [u/now (constantly ctime)]
-                (:task-id (task/reserve-task! task-service topic (u/rand-id))) => task-id)))))))
+        (fact "snoozed task can be reserved after the lease is revoked"
+          (let [task (task/task task-service task-id)]
+            (task/revoke-lease! task-service task-id (:record-ver task))
+            (:task-id (task/reserve-task! task-service topic (u/rand-id))) => task-id))))))
 
 
 (defn test-list-tasks
@@ -253,75 +246,3 @@
                            @test-config)]
     (facts "dynamodb task service"
       (run-all-tests dyn-task-service))))
-
-
-
-(comment
-
-  (def config
-    {:creds {:endpoint "http://localhost:7000"}
-     :tasks-table (str "sc-tasks-v2-test1" )})
-
-  (dyn/delete-table (:creds config) :table-name (:tasks-table config))
-
-  (dyn-task/create-table config)
-
-  (def tasks (repeat 50 (new-task "topic-a")))
-
-  (def task-service (dyn-task/dyn-task-service config))
-
-  (doseq [task tasks]
-    (task/create-task! task-service
-      (assoc task
-        :sub-topic (rand-nth ["acme" "rand-enterprise" "kalimark"]))))
-
-  (doseq [_ (range 0 5)]
-    (taoensso.timbre/spy :info
-      (task/reserve-task! task-service "topic-a" "001")))
-
-
-  (u/scroll
-    #(#'dyn-task/list-tasks-by-topic-scan-hkey
-       task-service
-       {:from 0
-        :to   9999999999999
-        :sub-topic "kalimark"
-        :status :starting}
-       (#'dyn-task/->topic-scan-hkey "topic-a")
-       %)
-    {:limit 1})
-
-
-
-  (let [topic "something"
-        from (-> 3 t/weeks t/ago)
-        to   (t/now)
-        weeks     (map #(#'dyn-task/->topic-scan-hkey* % topic)
-                    (tp/periodic-seq from to (t/weeks 1)))]
-
-    weeks)
-
-  (count (u/scroll
-           #(dyn-task/list-tasks
-              task-service
-              {:from (-> 1 t/weeks t/ago tc/to-long)
-               :to   (-> 1 t/weeks t/from-now tc/to-long)
-               :sub-topic "acme"
-               :topic "topic-a"
-               :status :starting}
-              %)
-           {:limit 100}))
-
-
-  (#'dyn-task/list-tasks-by-topic-scan-hkey
-    task-service
-    {:from (-> 1 t/weeks t/ago tc/to-long)
-     :to   (-> (t/now) tc/to-long)
-     :sub-topic "kalimark"
-     :topic "topic-a"
-     :status :starting}
-    "topic-a:2021:16"
-    {})
-
-  ;;
-  )

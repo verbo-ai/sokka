@@ -48,8 +48,6 @@
       (task/cleanup! task-service topic "pid")
       (deref (promise) 500 :timeout)
 
-      (task/extend-lease! task-service topic pid)
-
       (let [ctime (u/now)]
         (with-redefs [u/now (constantly (+ ctime (:lease-time task-service) 1))]
           ;; sweep
