@@ -1,19 +1,14 @@
-(ns verbo.sokka.task)
-;; ** Objectives:
-;; *** Must have:
-;; - [X] Must support all DurableQueue features (create, reserve, extend-lease, query, acknowledge/complete tasks)
-;; - [X] Must be possible to group tasks and query by tasks for a given group.
-;; - [X] Must be possible to snooze a task for a given amount of time.
-;; - [ ] Must be possible to distinguish completed with error and completed successfully states.
-;; - [ ] Tasks must be distributed.
-;; *** Nice to have:
-;; - [ ] Support querying by additional tags (eg., store-id). [The task-group can be extended to support this. For eg., the task-group-id can be a hierarchial value like: store-id:group-id. We can use BEGINS_WITH to then allow querying by just store-id or group-id. Need to ensure that this is a scalable solution.]
+(ns ^{:author "Sathya Vittal (@sathyavijayan)"
+      :doc "Protocols and constants to implement a task queue."}
+    verbo.sokka.task)
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                                                                            ;;
 ;;                          ---==| T A S K S |==----                          ;;
 ;;                                                                            ;;
  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (def ^:const task-allowed-status-transitions
+  "List of possible task statuses mapped to statuses they can transition to"
   {:starting #{:running  :failed :terminated}
    :running  #{:failed  :snoozed  :terminated :starting}
    :snoozed  #{:starting :failed :terminated}
@@ -21,33 +16,37 @@
    :terminated nil})
 
 (def ^:const task-statuses
+  "List of possible statuses for a task"
   (->> task-allowed-status-transitions
     keys
     (into #{})))
 
-(defprotocol TaskService
+(defprotocol TaskStore
+  "Protocol for a task store with functions to manage the life-cycle of
+  a `task`."
 
   (create-task! [this task]
-    "Creates a new task.")
+    "Create and returns a new task.")
 
   (task [this task-id]
-    "Returns task for the specified task-id combination. Returns nil
-     if task-id not found.")
+    "Get task by `task-id`. Returns nil when no task is found.")
 
   (tasks [this task-group-id]
-    "Returns tasks for the specified task-group-id")
+    "Get tasks for a given `task-group-id`. Returns nil when no tasks
+    are found for the supplied input.")
 
   (list-tasks [this topic {:keys [from to sub-topic] :as filters} {:keys [limit] :as cursor}]
     "List all tasks")
 
   (reserve-task! [this topic pid]
-    "Attempts to reserve the next available task. Tasks that are not
-     owned by any process and whose lease expired are available to be
-     reserved. Throws exceptions in the following scenarios:
-     :no-task-found - No task available to be picked up.")
+    "Attempts to reserve the next available task for execution by
+    obtaining a lease for configured amount of time (implementation
+    specific). Returns nil when there is no task is available for
+    reservation.")
 
   (extend-lease! [this task-id pid]
-    "Attempts to extend lease of the specified task.
+    "Attempts to extend lease of the specified task. Throws the
+    following exceptions:
      :no-task-found - Task not found.
      :already-done  - Task terminated.
      :wrong-owner   - Attempted to extend lease of a task owned by
@@ -55,15 +54,28 @@
      :lease-expired - Attempted to extend lease of a task whose lease
      already expired.")
 
-  (terminate! [this task-id pid])
+  (terminate! [this task-id pid]
+    "Updates the status to `:terminated`. This means the task has been
+    executed successfully." )
 
-  (snooze! [this task-id pid snooze-time])
+  (snooze! [this task-id pid snooze-time]
+    "Temporarily pause the task for `snooze-time`
+    milliseconds. Updates the status to `:snoozed`.")
 
-  (revoke-lease! [this task-id record-ver])
+  (revoke-lease! [this task-id record-ver]
+    "Forcefully revoke the lease held for the specified `task-id`. The
+    `record-ver` from the last time the task was read must be
+    supplied. This is used to implement MVCC to ensure that the task
+    wasn't updated by another process concurrently.")
 
-  (fail! [this task-id pid error]))
+  (fail! [this task-id pid error]
+    "Updates the status of the task to `:failed`. An optional
+    error-message can be passed."))
 
 
 (defprotocol LeaseSupervision
+  "Protocol for backends (usually stores that dont support locks) that
+  require special supervison of leased tasks to prevent time skew
+  issues."
   (list-leased-tasks [this topic cursor]
     "List all running / snoozed tasks"))

@@ -13,7 +13,7 @@
   (fact "handles close properly"
     (let [ctrl (ctrl/new-control)]
       (try
-        (sut/monitor! ctrl)
+        (ctrl/monitor! ctrl)
         (ctrl/close! ctrl)
         (deref ctrl 300 :didnt-complete) => :closed
         (finally
@@ -22,7 +22,7 @@
   (fact "handles abort properly"
     (let [ctrl (ctrl/new-control)]
       (try
-        (sut/monitor! ctrl)
+        (ctrl/monitor! ctrl)
         (ctrl/abort! ctrl)
         (deref ctrl 300 :didnt-complete) => :aborted
         (finally
@@ -31,7 +31,7 @@
   (fact "aborts ctrl on timeout"
     (let [ctrl (ctrl/new-control 1)]
       (try
-        (sut/monitor! ctrl)
+        (ctrl/monitor! ctrl)
         (deref ctrl 100 :didnt-complete) => :timed-out
         (.closed? (:abort-chan ctrl)) => true
         (finally

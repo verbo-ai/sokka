@@ -5,7 +5,8 @@
             [clojure.core.async :as async :refer [go]]
             [safely.core :refer [sleeper safely]]
             [verbo.sokka.supervisor :as supervisor]
-            [verbo.sokka.utils :as u]))
+            [verbo.sokka.utils :as u]
+            [verbo.sokka.ctrl :as ctrl]))
 
 (def ^:const DEFAULT-TASK-KEEPALIVE-TIME (* 3 60 1000))
 
@@ -91,22 +92,6 @@
 
         (raise! task-service pid (:task-id task)
           (or error-message "unknown error"))))))
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;                                                                            ;;
-;;                       ----==| M O N I T O R |==----                        ;;
-;;                                                                            ;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(defn monitor!
-  [{:keys [close-chan abort-chan timeout-chan p] :as ctrl}]
-  (async/go
-    (let [[_ c] (async/alts! [timeout-chan abort-chan close-chan])]
-      (condp = c
-        close-chan   (deliver p :closed)
-        abort-chan   (deliver p :aborted)
-        timeout-chan (do
-                       (abort! ctrl)
-                       (deliver p :timed-out))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                                                                            ;;
@@ -214,7 +199,7 @@
 
 (defn execute!
   [{:keys [task-service topic pid pfn keepalive-ms timeout-ms]} ctrl task]
-  (monitor! ctrl)
+  (ctrl/monitor! ctrl)
 
   (keepalive!* ctrl keepalive-ms
     #(keepalive-fn! task-service (:task-id task) pid))

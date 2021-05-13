@@ -54,3 +54,14 @@
        abort-chan
        timeout-chan
        (promise)))))
+
+(defn monitor!
+  [{:keys [close-chan abort-chan timeout-chan p] :as ctrl}]
+  (async/go
+    (let [[_ c] (async/alts! [timeout-chan abort-chan close-chan])]
+      (condp = c
+        close-chan   (deliver p :closed)
+        abort-chan   (deliver p :aborted)
+        timeout-chan (do
+                       (abort! ctrl)
+                       (deliver p :timed-out))))))

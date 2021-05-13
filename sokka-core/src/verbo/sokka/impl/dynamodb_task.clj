@@ -442,7 +442,7 @@
                               reservation-index
                               lease-time
                               snooze-time]
-  TaskService
+  TaskStore
 
   (create-task! [this {:keys [topic sub-topic task-group-id data] :as task-def}]
     (assert #(nil? (:task-id task-def)) "can't set task-id")
