@@ -241,12 +241,14 @@
 
 (defn- cleanup-leased-tasks!
   [{:keys [task-service monitored-tasks topic pid max-poll-interval-ms] :as opts} last-cleanup-time-ms]
-  (let [now (u/now)]
-    (if (> now (+ last-cleanup-time-ms max-poll-interval-ms))
-      (do
-        (supervisor/cleanup-leased-tasks! monitored-tasks task-service topic)
-        now)
-      last-cleanup-time-ms)))
+  (if (satisfies? task/LeaseSupervision task-service)
+    (let [now (u/now)]
+      (if (> now (+ last-cleanup-time-ms max-poll-interval-ms))
+        (do
+          (supervisor/cleanup-leased-tasks! monitored-tasks task-service topic)
+          now)
+        last-cleanup-time-ms))
+    (u/now)))
 
 (defn worker
   "Polls the task service on the given `topic` for a task and when
@@ -296,8 +298,7 @@
                           (when sleeper-fn (sleeper-fn))
 
                           (when-not (.closed? close-chan)
-                            (let [[ctrl ftr :as reserved] (taoensso.timbre/spy :info
-                                                            (reserve-and-execute! opts))
+                            (let [[ctrl ftr :as reserved] (reserve-and-execute! opts)
                                   ;; this is the best opportunity to
                                   ;; run cleanup (if
                                   ;; max-poll-interval-ms has passed

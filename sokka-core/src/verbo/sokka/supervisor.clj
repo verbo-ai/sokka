@@ -36,8 +36,7 @@
                    {:limit 100})]
       (send monitored-tasks mark-task! task-service task))
     ;; sweep
-    (doseq [[task-id {:keys [record-ver expiry]}] (taoensso.timbre/spy :info
-                                                    @monitored-tasks)]
+    (doseq [[task-id {:keys [record-ver expiry]}] @monitored-tasks]
       (when (> (u/now) expiry)
         (send-off monitored-tasks sweep-task! task-service task-id record-ver)))
 
