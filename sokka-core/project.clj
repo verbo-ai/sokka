@@ -24,7 +24,7 @@
                  [pandect "0.6.1"]
 
 
-                 [com.cognitect.aws/api "0.8.505" ]
+                 [com.cognitect.aws/api "0.8.505"]
                  [com.cognitect.aws/endpoints "1.1.11.1001"]
                  [com.cognitect.aws/dynamodb "810.2.801.0"]]
 

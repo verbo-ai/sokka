@@ -45,6 +45,8 @@
 
 (defn test-get-task-by-id
   [taskq]
+  (taoensso.timbre/spy :info taskq)
+
   (facts "get-task by task-id"
     (fact "returns nil when task not found"
       (task/task taskq (u/rand-id)) => nil)
@@ -232,6 +234,11 @@
 (defonce test-config
   (delay
     {:creds {:endpoint "http://localhost:7000"}
+     :client {:endpoint-override
+              {:all {:port 7000
+                     :region "us-east-1"
+                     :hostname "localhost"
+                     :protocol :http}}}
      :tasks-table (str "sc-tasks-v2-" (u/rand-id))}))
 
 (defn ensure-test-table
@@ -242,7 +249,6 @@
       (log/info "test table already exists"))))
 
 (with-state-changes [(before :facts (ensure-test-table @test-config))]
-  (let [dyn-taskq (dyn-task/dyn-taskq
-                    @test-config)]
+  (let [dyn-taskq (dyn-task/dyn-taskq @test-config)]
     (facts "dynamodb task service"
       (run-all-tests dyn-taskq))))

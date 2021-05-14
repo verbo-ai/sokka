@@ -8,7 +8,8 @@
             [pandect.algo.sha256 :refer [sha256]]
             [verbo.sokka.task :refer :all]
             [verbo.sokka.utils :as u :refer [now]]
-            [safely.core :refer [safely]])
+            [safely.core :refer [safely]]
+            [verbo.sokka.aws :as aws])
   (:import com.amazonaws.services.dynamodbv2.model.ConditionalCheckFailedException))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -22,7 +23,9 @@
 
 (def ^:const DEFAULT-CONFIG
   {;; the aws region's endpoint to contact
-   :creds {:endpoint    :eu-west-1}
+   :creds {:endpoint :eu-west-1}
+
+   :client {:region "eu-west-1"}
 
    ;; the name of the table
    :tasks-table         "sc-tasks-v2"
@@ -46,6 +49,20 @@
 
    :snooze-time              DEFAULT_LEASE_TIME})
 
+
+(defn ddb-rec->m
+  "converts form a dynamo record representation to a clojure map"
+  [r]
+  (->> r
+    (map (fn [[k [& [[t v]]]]] [k (case t :N (Long/parseLong v) v)]))
+    (into {})))
+
+(defn m->ddb-rec
+  "converts form a Clojure map to a dynamo record representation"
+  [r]
+  (->> r
+    (map (fn [[k v]] [k {(if (number? v) :N :S) (str v)}]))
+    (into {})))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                                                                            ;;
@@ -234,23 +251,24 @@
 (defn- find-reservable-tasks
   "Queries the reservation index to find tasks that can be
   reserved."
-  [{:keys [creds tasks-table reservation-index] :as config} topic timestamp limit]
+  [{:keys [ddb tasks-table reservation-index] :as config} topic timestamp limit]
   (let [reserve-key (format "%03d%s" 101 0)]
-    (->> (dyn/query creds
-           {:table-name tasks-table
-            :index-name reservation-index
-            :select "ALL_ATTRIBUTES"
-            :key-condition-expression
+    (->> (aws/invoke! ddb
+           :Query
+           {:TableName tasks-table
+            :IndexName reservation-index
+            :Select "ALL_ATTRIBUTES"
+            :KeyConditionExpression
             "#topic = :topic AND #reserv < :reserved"
-            :expression-attribute-values
-            {":topic" (->topic-key topic :starting)
-             ":reserved" reserve-key}
-            :expression-attribute-names
+            :ExpressionAttributeNames
             {"#reserv" "__reserv-key"
              "#topic" "__topic-key"}
-            :limit limit})
-      :items
-      (map parse-task*))))
+            :ExpressionAttributeValues
+            {":topic" {:S (->topic-key topic :starting)}
+             ":reserved" {:S reserve-key}}
+            :Limit limit})
+      :Items
+      (map (comp parse-task* ddb-rec->m)))))
 
 (defn- find-running-and-snoozed-tasks
   "Queries the reservation index to find tasks that are running/snoozed."
@@ -274,35 +292,34 @@
     (u/query-results->paginated-response
         parse-task*)))
 
-
 (defn- get-task-by-id
-  [{:keys [creds tasks-table]} task-id]
+  [{:keys [ddb tasks-table]} task-id]
   (let [[task-group-id __task-id] (str/split task-id #"--")]
     (when (every? not-empty [task-group-id __task-id])
-      (->> (dyn/get-item creds
-             {:table-name tasks-table
-              :key {:task-group-id
-                    {:s task-group-id}
-                    :task-id
-                    {:s task-id}}})
-        :item
+      (->> (aws/invoke! ddb
+             :GetItem
+             {:TableName tasks-table
+              :Key {"task-group-id" {:S task-group-id}
+                    "task-id" {:S task-id}}})
+        :Item
+        ddb-rec->m
         parse-task*))))
 
 (defn- get-tasks-by-task-group-id
-  ;; TODO:
-  [{:keys [creds tasks-table task-group-index]} task-group-id]
-  (->> (dyn/query creds
-         {:table-name tasks-table
-          :select "ALL_ATTRIBUTES"
-          :key-condition-expression
-          "#tgid = :tgid"
-          :expression-attribute-values
-          {":tgid" task-group-id}
-          :expression-attribute-names
+  ;; TODO: paginate
+  [{:keys [ddb tasks-table task-group-index]} task-group-id]
+  (->> (aws/invoke! ddb
+         :Query
+         {:TableName tasks-table
+          :Select "ALL_ATTRIBUTES"
+          :KeyConditionExpression "#tgid = :tgid"
+          :ExpressionAttributeNames
           {"#tgid" "task-group-id"}
-          :limit 200})
-    :items
-    (map parse-task*)))
+          :ExpressionAttributeValues
+          {":tgid" {:S task-group-id}}
+          :Limit 200})
+    :Items
+    (map (comp parse-task* ddb-rec->m))))
 
 (defn- list-tasks-by-topic-scan-hkey
   "see: ->topic-scan-hkey*"
@@ -549,5 +566,30 @@
 
 (defn dyn-taskq
   [config]
-  (map->DynamoTaskService
-    (merge DEFAULT-CONFIG config)))
+  (let [config'    (u/deep-merge DEFAULT-CONFIG config)
+        dyn-client (aws/make-client (:client config') :dynamodb)]
+    (map->DynamoTaskService (assoc config' :ddb dyn-client))))
+
+
+(comment
+
+  (def ddb  (aws/create-client
+              (:client
+               (u/deep-merge DEFAULT-CONFIG
+                 {:client
+                  {:api :dynamodb
+                   :region  :us-east-1
+                   :endpoint-override {:port 7000,
+                                       :hostname "localhost",
+                                       :path "/"
+                                       :protocol :http}}}))))
+
+
+  (aws/help (:ddb taskq) :Query)
+
+  (aws/invoke! ddb :ListTables {})
+
+  (dyn/list-tables {:endpoint "http://localhost:7000"})
+
+
+  )

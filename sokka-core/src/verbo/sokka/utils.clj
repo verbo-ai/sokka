@@ -4,11 +4,20 @@
   (:import [com.amazonaws.services.dynamodbv2.model ConditionalCheckFailedException
             ProvisionedThroughputExceededException]
            [java.nio ByteBuffer HeapByteBuffer]
-           java.util.UUID))
+           java.util.UUID
+           [java.io DataInputStream]))
 
 (defn now
   []
   (System/currentTimeMillis))
+
+(defn deep-merge
+  "Like merge, but merges maps recursively."
+  [& maps]
+  (let [maps (filter (comp not nil?) maps)]
+    (if (every? map? maps)
+      (apply merge-with deep-merge maps)
+      (last maps))))
 
 (defn rand-id
   "Returns a 128 bit random id (based on UUID) in a short format.
@@ -119,10 +128,19 @@
 (defn byte-array? [val]
   (= (type val) byte-array-type))
 
-
 (defn byte-buffer? [val]
   (= (type val) java.nio.HeapByteBuffer))
 
+(defn buffered-input-stream? [val]
+  (= (type val) java.io.BufferedInputStream))
+
+(defn slurp-bytes
+  "Slurp the bytes from a slurpable thing"
+  [x]
+  (with-open [is (clojure.java.io/input-stream x)
+              out (java.io.ByteArrayOutputStream.)]
+    (clojure.java.io/copy is out)
+    (.toByteArray out)))
 
 (defn deserialize
   ([val]
@@ -131,7 +149,12 @@
   ([val config]
    (let [config (->nippy-config config)]
      (cond
-       (byte-buffer? val) (nippy/thaw (.array ^java.nio.HeapByteBuffer val) config)
+       (byte-buffer? val)
+       (nippy/thaw (.array ^java.nio.HeapByteBuffer val) config)
+
+       (buffered-input-stream? val)
+       (nippy/thaw (slurp-bytes val) config)
+
        (byte-array? val)  (nippy/thaw val config)
        :else val))))
 
