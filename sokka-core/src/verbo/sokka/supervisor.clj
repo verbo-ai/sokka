@@ -5,7 +5,7 @@
             [clojure.tools.logging :as log]))
 
 (defn mark-task!
-  [m {:keys [lease-time] :as task-service} {:keys [task-id record-ver status snooze-time]}]
+  [m {:keys [lease-time] :as taskq} {:keys [task-id record-ver status snooze-time]}]
   (if (= record-ver (:record-ver (get m task-id)))
     m
     (assoc m task-id
@@ -16,9 +16,9 @@
                  (+ (u/now) lease-time))})))
 
 (defn sweep-task!
-  [a {:keys [lease-time] :as task-service} task-id record-ver]
+  [a {:keys [lease-time] :as taskq} task-id record-ver]
   (safely
-      (task/revoke-lease! task-service task-id record-ver)
+      (task/revoke-lease! taskq task-id record-ver)
     :on-error
     :max-retries 3
     :log-level :debug
@@ -29,16 +29,16 @@
   (dissoc a task-id))
 
 (defn cleanup-leased-tasks!
-  [monitored-tasks task-service topic]
+  [monitored-tasks taskq topic]
   (try
     ;; mark everything
-    (doseq [task (u/scroll (partial task/list-leased-tasks task-service topic)
+    (doseq [task (u/scroll (partial task/list-leased-tasks taskq topic)
                    {:limit 100})]
-      (send monitored-tasks mark-task! task-service task))
+      (send monitored-tasks mark-task! taskq task))
     ;; sweep
     (doseq [[task-id {:keys [record-ver expiry]}] @monitored-tasks]
       (when (> (u/now) expiry)
-        (send-off monitored-tasks sweep-task! task-service task-id record-ver)))
+        (send-off monitored-tasks sweep-task! taskq task-id record-ver)))
 
     (catch Throwable t
       (log/warnf t "worker[%s]: error cleaning up leased tasks! " topic))

@@ -18,24 +18,28 @@
                   :exclusions [org.clojure/tools.reader]]
                  [com.taoensso/nippy "3.0.0"
                   :exclusions [com.taoensso/encore]]
-                 [com.taoensso/timbre "5.1.0"]
-                 [pandect "0.6.1"]
-
-                 ;;logging madness
-                 [org.clojure/tools.logging "1.1.0"]
-                 [com.fzakaria/slf4j-timbre "0.3.20"]
-                 [org.slf4j/log4j-over-slf4j "1.7.30"]
-                 [org.slf4j/jul-to-slf4j "1.7.30"]
-                 [org.slf4j/jcl-over-slf4j "1.7.30"]
                  [amazonica "0.3.152"
                   :exclusions [com.amazonaws/aws-java-sdk
-                               com.taoensso/nippy]]]
+                               com.taoensso/nippy]]
+                 [pandect "0.6.1"]
+
+
+                 [com.cognitect.aws/api "0.8.505" ]
+                 [com.cognitect.aws/endpoints "1.1.11.1001"]
+                 [com.cognitect.aws/dynamodb "810.2.801.0"]]
+
   :profiles {:dev
              {:plugins [[lein-midje "3.1.1"]]
               :dynamodb-local {:port 7000 :in-memory? true}
               :resource-paths ["resources" "dev" "test"]
               :source-paths ["src" "dev" "test"]
-              :dependencies [[midje "1.9.9"]]}
+              :dependencies [[midje "1.9.9"]
+                             [com.taoensso/timbre "5.1.0"]
+                             [org.clojure/tools.logging "1.1.0"]
+                             [com.fzakaria/slf4j-timbre "0.3.20"]
+                             [org.slf4j/log4j-over-slf4j "1.7.30"]
+                             [org.slf4j/jul-to-slf4j "1.7.30"]
+                             [org.slf4j/jcl-over-slf4j "1.7.30"]]}
 
              :test
              {:plugins

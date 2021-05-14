@@ -126,6 +126,7 @@
     :__topic-key
     :__topic-scan-hkey
     :__topic-scan-rkey
+    :__reserv-key
     :record-ver))
 
 (def status-flags*
@@ -323,12 +324,12 @@
                     {"#h" "__topic-scan-hkey"
                      "#r" "__topic-scan-rkey"}
                     :expression-attribute-values
-                    {":h"  hk
-                     ":fr" from-range-key
-                     ":tr" to-range-key}}
+                    {":h" hk
+                     ":fr"  from-range-key
+                     ":tr"  to-range-key}}
              limit (assoc :limit limit)
              last-evaluated-key (assoc :exclusive-start-key last-evaluated-key)))
-      (u/query-results->paginated-response parse-task*))))
+      (u/query-results->paginated-response (comp ->returnable-item parse-task*)))))
 
 
 (defn list-tasks*
@@ -529,8 +530,8 @@
   (revoke-lease! [this task-id record-ver]
     (update-status! this task-id :starting nil {:record-ver record-ver}))
 
-  (list-tasks [this topic {:keys [from to sub-topic] :as filters} {:keys [limit] :as cursor}]
-    (list-tasks* this filters cursor))
+  (list-tasks [this {:keys [topic from to sub-topic] :as filters} {:keys [limit] :as cursor}]
+    (list-tasks* this filters  cursor))
 
   (terminate! [this task-id pid]
     (update-status! this task-id :terminated pid {}))
@@ -546,7 +547,7 @@
   (list-leased-tasks [this topic cursor]
     (find-running-and-snoozed-tasks this topic cursor)))
 
-(defn dyn-task-service
+(defn dyn-taskq
   [config]
   (map->DynamoTaskService
     (merge DEFAULT-CONFIG config)))

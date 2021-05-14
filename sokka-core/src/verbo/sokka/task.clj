@@ -35,7 +35,7 @@
     "Get tasks for a given `task-group-id`. Returns nil when no tasks
     are found for the supplied input.")
 
-  (list-tasks [this topic {:keys [from to sub-topic] :as filters} {:keys [limit] :as cursor}]
+  (list-tasks [this {:keys [from to sub-topic] :as filters} {:keys [limit] :as cursor}]
     "List all tasks")
 
   (reserve-task! [this topic pid]

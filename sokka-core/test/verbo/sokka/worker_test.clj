@@ -134,13 +134,13 @@
      :tasks-table (str "sc-tasks-v2-" (u/rand-id))}))
 
 (with-state-changes [(before :facts (ensure-test-table @test-config))]
-  (let [dyn-task-service (dyn-task/dyn-task-service
+  (let [dyn-taskq (dyn-task/dyn-taskq
                            @test-config)]
     (facts "about worker"
       (fact "it is possible to start stop the worker gracefully"
         (let [topic (u/rand-id)
               pid (u/rand-id)
-              stop-fn (sut/worker {:task-service dyn-task-service
+              stop-fn (sut/worker {:taskq dyn-taskq
                                    :topic topic
                                    :pid pid
                                    :pfn (constantly [:sokka/completed])})]
@@ -150,11 +150,11 @@
         (let [test-ctrl (ctrl/new-control)
               topic (u/rand-id)
               pid (u/rand-id)
-              _ (task/create-task! dyn-task-service
+              _ (task/create-task! dyn-taskq
                   {:topic topic
                    :data :noop})]
           (with-redefs [ctrl/new-control (constantly test-ctrl)]
-            (let [stop-fn (sut/worker {:task-service dyn-task-service
+            (let [stop-fn (sut/worker {:taskq dyn-taskq
                                        :topic topic
                                        :pid pid
                                        :pfn (fn [_]
@@ -178,7 +178,7 @@
 
 
 (with-state-changes [(before :facts (ensure-test-table @test-config))]
-  (let [dyn-task-service (dyn-task/dyn-task-service
+  (let [dyn-taskq (dyn-task/dyn-taskq
                            @test-config)
         topic (u/rand-id)
         pid (u/rand-id)
@@ -188,18 +188,18 @@
           (swap! db update (-> task :data :op) (fnil inc 0))
           [:sokka/completed])
 
-        foo (task/create-task! dyn-task-service
+        foo (task/create-task! dyn-taskq
               {:topic topic
                :data {:op :foo}})
-        bar (task/create-task! dyn-task-service
+        bar (task/create-task! dyn-taskq
               {:topic topic
                :data {:op :bar}})
-        baz (task/create-task! dyn-task-service
+        baz (task/create-task! dyn-taskq
               {:topic topic
                :data {:op :baz}})]
 
     (facts "worker schedules all tasks and updates the status"
-      (let [stop-fn (sut/worker {:task-service dyn-task-service
+      (let [stop-fn (sut/worker {:taskq dyn-taskq
                                  :topic topic
                                  :pid pid
                                  :pfn test-task-handler})]
@@ -215,14 +215,14 @@
           @db => {:foo 1 :bar 1 :baz 1})
 
         (fact "task statuses are updated correctly"
-          (:status (task/task dyn-task-service (:task-id foo))) => :terminated
-          (:status (task/task dyn-task-service (:task-id bar))) => :terminated
-          (:status (task/task dyn-task-service (:task-id baz))) => :terminated)))))
+          (:status (task/task dyn-taskq (:task-id foo))) => :terminated
+          (:status (task/task dyn-taskq (:task-id bar))) => :terminated
+          (:status (task/task dyn-taskq (:task-id baz))) => :terminated)))))
 
 #_
 (with-state-changes [(before :facts (ensure-test-table @test-config))]
-  (let [dyn-task-service (dyn-task/dyn-task-service
-                           @test-config)
+  (let [dyn-taskq (dyn-task/dyn-taskq
+                    @test-config)
         topic (u/rand-id)
         pid (u/rand-id)
         db (atom {})
@@ -236,18 +236,18 @@
             :else
             [:sokka/completed]))
 
-        foo (task/create-task! dyn-task-service
+        foo (task/create-task! dyn-taskq
               {:topic topic
                :data {:op :foo}})
-        bar (task/create-task! dyn-task-service
+        bar (task/create-task! dyn-taskq
               {:topic topic
                :data {:op :bar}})
-        baz (task/create-task! dyn-task-service
+        baz (task/create-task! dyn-taskq
               {:topic topic
                :data {:op :baz}})]
 
     (facts "worker schedules all tasks and updates the status"
-      (let [stop-fn (sut/worker {:task-service dyn-task-service
+      (let [stop-fn (sut/worker {:taskq dyn-taskq
                                  :topic topic
                                  :pid pid
                                  :pfn test-task-handler})]
@@ -263,6 +263,6 @@
           @db => {:foo 1 :bar 1 :baz 2})
 
         (fact "task statuses are updated correctly"
-          (:status (task/task dyn-task-service (:task-id foo))) => :terminated
-          (:status (task/task dyn-task-service (:task-id bar))) => :failed
-          (:status (task/task dyn-task-service (:task-id baz))) => :terminated)))))
+          (:status (task/task dyn-taskq (:task-id foo))) => :terminated
+          (:status (task/task dyn-taskq (:task-id bar))) => :failed
+          (:status (task/task dyn-taskq (:task-id baz))) => :terminated)))))

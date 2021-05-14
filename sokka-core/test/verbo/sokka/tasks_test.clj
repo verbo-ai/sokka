@@ -27,10 +27,10 @@
   #{:task-id :task-group-id :status :topic})
 
 (defn test-create-task
-  [task-service]
+  [taskq]
   (facts "create-task!"
     (let [task-def   (new-task)
-          task       (task/create-task! task-service task-def)]
+          task       (task/create-task! taskq task-def)]
       (fact "injects a task-id"
         (:task-id task) => truthy)
       (fact "sets default status to :starting"
@@ -40,34 +40,34 @@
     (fact "injects parent tasks when parent shards are supplied"
       (let [td (-> (new-task)
                  (assoc :parent-tasks [(u/rand-id) (u/rand-id)]))
-            {:keys [parent-tasks]} (task/create-task! task-service td)]
+            {:keys [parent-tasks]} (task/create-task! taskq td)]
         (count parent-tasks) => 2))))
 
 (defn test-get-task-by-id
-  [task-service]
+  [taskq]
   (facts "get-task by task-id"
     (fact "returns nil when task not found"
-      (task/task task-service (u/rand-id)) => nil)
+      (task/task taskq (u/rand-id)) => nil)
 
-    (let [{:keys [task-id]} (task/create-task! task-service (new-task))
-          task (task/task task-service task-id)]
+    (let [{:keys [task-id]} (task/create-task! taskq (new-task))
+          task (task/task taskq task-id)]
       (fact "returns only the keys defined in t.h.data-stores/Task"
         (keys task) => (contains TASK_KEYS :in-any-order :gaps-ok))
       (fact "returns status as a keyword"
         (:status task) => keyword?))))
 
 (defn test-get-tasks-by-task-group
-  [task-service]
-  (facts "get-tasks by task-service"
+  [taskq]
+  (facts "get-tasks by taskq"
     (let [topic (u/rand-id)
           task-group-id (u/rand-id)
           n         5
           task-defs (repeatedly n #(new-task topic task-group-id))]
       (doseq [task-def task-defs]
-        (task/create-task! task-service task-def))
+        (task/create-task! taskq task-def))
       (fact "returns [] when task group id not found"
-        (task/tasks task-service (u/rand-id)) => [])
-      (let [tasks (task/tasks task-service task-group-id)]
+        (task/tasks taskq (u/rand-id)) => [])
+      (let [tasks (task/tasks taskq task-group-id)]
         (fact "returns only the keys defined in t.h.data-stores/Task"
           (doseq [t tasks]
             (keys t) => (contains TASK_KEYS :in-any-order :gaps-ok)))
@@ -77,152 +77,152 @@
           (:status (first tasks)) => keyword?)))))
 
 (defn test-reserve-task!
-  [task-service]
+  [taskq]
   (let [pid (u/rand-id)
         topic (u/rand-id)]
     (facts "reserve-task!"
       (fact "returns nil when no tasks available to reserve"
-        (task/reserve-task! task-service topic pid) => nil)
+        (task/reserve-task! taskq topic pid) => nil)
 
       (let [task-def (new-task topic)
-            task (task/create-task! task-service task-def)
+            task (task/create-task! taskq task-def)
             ctime    (u/now)
             reserved (with-redefs [u/now (constantly ctime)]
-                       (task/reserve-task! task-service topic pid))]
+                       (task/reserve-task! taskq topic pid))]
         (fact "sets status of reserved task to running"
           (:status reserved) => :running)
         (fact "sets pid of reserved task to pid supplied"
           (:pid reserved) => pid)
         (fact "sets lease to current-time + lease-time"
-          (:lease reserved) => (+ ctime (:lease-time task-service))))
+          (:lease reserved) => (+ ctime (:lease-time taskq))))
 
       (let [task-def (new-task topic)
-            {:keys [task-id]} (task/create-task! task-service task-def)]
+            {:keys [task-id]} (task/create-task! taskq task-def)]
         (fact "does not reserve tasks that are terminated"
-          (task/reserve-task! task-service topic pid)
-          (task/terminate! task-service task-id pid)
-          (task/reserve-task! task-service topic pid) => nil))
+          (task/reserve-task! taskq topic pid)
+          (task/terminate! taskq task-id pid)
+          (task/reserve-task! taskq topic pid) => nil))
 
       (let [task-def (new-task topic)
-            {:keys [task-id]} (task/create-task! task-service task-def)]
+            {:keys [task-id]} (task/create-task! taskq task-def)]
         (fact "does not reserve tasks that are terminated"
           ;;reserve and update status
-          (task/reserve-task! task-service topic pid)
-          (task/terminate! task-service task-id pid)
+          (task/reserve-task! taskq topic pid)
+          (task/terminate! taskq task-id pid)
           (let [ctime (u/now)]
             (with-redefs [u/now (constantly (+ ctime (* 1000 60)))]
-              (task/reserve-task! task-service topic pid))) => nil)))
+              (task/reserve-task! taskq topic pid))) => nil)))
 
     (let [task-def (new-task topic)
-          {:keys [task-id]} (task/create-task! task-service task-def)]
+          {:keys [task-id]} (task/create-task! taskq task-def)]
       (fact "does not reserve tasks that have failed"
         ;;reserve and update status
-        (task/reserve-task! task-service topic pid)
-        (task/fail! task-service task-id pid "fail!")
+        (task/reserve-task! taskq topic pid)
+        (task/fail! taskq task-id pid "fail!")
         (let [ctime (u/now)]
           (with-redefs [u/now (constantly (+ ctime (* 1000 60)))]
-            (task/reserve-task! task-service topic pid))) => nil))
+            (task/reserve-task! taskq topic pid))) => nil))
 
     (let [task-def (new-task topic)
-          {:keys [task-id]} (task/create-task! task-service task-def)]
+          {:keys [task-id]} (task/create-task! taskq task-def)]
       (fact "does not reserve tasks that are snoozed"
         ;;reserve and update status
-        (task/reserve-task! task-service topic pid)
-        (task/snooze! task-service task-id pid (* 5 60 1000))
+        (task/reserve-task! taskq topic pid)
+        (task/snooze! taskq task-id pid (* 5 60 1000))
         (let [ctime (u/now)]
           (with-redefs [u/now (constantly (+ ctime (* 1000 60)))]
-            (task/reserve-task! task-service topic pid))) => nil))))
+            (task/reserve-task! taskq topic pid))) => nil))))
 
 (defn test-extend-lease!
-  [task-service]
+  [taskq]
   (let [topic (u/rand-id)
         task-group-id (u/rand-id)
         pid (u/rand-id)]
     (facts "extend-lease!"
       (fact "throws :task-not-found when task-id supplied does not exist"
-        (task/extend-lease! task-service (u/rand-id) pid)
+        (task/extend-lease! taskq (u/rand-id) pid)
         => (throws (h/error= :forbidden :task-not-found)))
       (fact "throws :invalid-status when task status is not :running"
-        (let [{:keys [task-id]} (task/create-task! task-service
+        (let [{:keys [task-id]} (task/create-task! taskq
                                   (new-task topic (u/rand-id)))]
-          (task/extend-lease! task-service task-id pid) => (throws (h/error= :forbidden :invalid-status))
+          (task/extend-lease! taskq task-id pid) => (throws (h/error= :forbidden :invalid-status))
           ;;reserve and update status
-          (task/reserve-task! task-service topic pid)
-          (task/snooze! task-service task-id pid (* 5 60 1000))
-          (task/extend-lease! task-service task-id pid) => (throws (h/error= :forbidden :invalid-status))
-          (task/terminate! task-service task-id pid)
-          (task/extend-lease! task-service task-id pid) => (throws (h/error= :forbidden :invalid-status))))
+          (task/reserve-task! taskq topic pid)
+          (task/snooze! taskq task-id pid (* 5 60 1000))
+          (task/extend-lease! taskq task-id pid) => (throws (h/error= :forbidden :invalid-status))
+          (task/terminate! taskq task-id pid)
+          (task/extend-lease! taskq task-id pid) => (throws (h/error= :forbidden :invalid-status))))
       (fact "throws :wrong-owner when invalid pid is supplied"
-        (let [_ (task/create-task! task-service (new-task topic task-group-id))
-              {:keys [task-id]} (task/reserve-task! task-service topic pid)]
-          (task/extend-lease! task-service task-id (u/rand-id)) =>
+        (let [_ (task/create-task! taskq (new-task topic task-group-id))
+              {:keys [task-id]} (task/reserve-task! taskq topic pid)]
+          (task/extend-lease! taskq task-id (u/rand-id)) =>
           (throws #(= :wrong-owner (-> % ex-data :error)))))
       (fact "throws :lease-expired when lease of the task is already expired"
-        (let [_          (task/create-task! task-service (new-task topic))
-              {:keys [task-id]} (task/reserve-task! task-service topic pid)
-              lease-time (:lease-time task-service)
+        (let [_          (task/create-task! taskq (new-task topic))
+              {:keys [task-id]} (task/reserve-task! taskq topic pid)
+              lease-time (:lease-time taskq)
               later (+ (u/now) (* 2 lease-time))]
           (with-redefs [u/now (constantly later)]
-            (task/extend-lease! task-service task-id pid)) =>
+            (task/extend-lease! taskq task-id pid)) =>
           (throws (h/error= :forbidden :lease-expired))))
       (fact "extends lease to current-time + lease_time"
-        (let [_          (task/create-task! task-service (new-task topic))
-              {:keys [task-id lease]} (task/reserve-task! task-service topic pid)
+        (let [_          (task/create-task! taskq (new-task topic))
+              {:keys [task-id lease]} (task/reserve-task! taskq topic pid)
               ctime (u/now)]
           (with-redefs [u/now (constantly ctime)]
-            (task/extend-lease! task-service task-id pid)) => :ok
-          (:lease (task/task task-service task-id)) => (+ ctime (:lease-time task-service))))
+            (task/extend-lease! taskq task-id pid)) => :ok
+          (:lease (task/task taskq task-id)) => (+ ctime (:lease-time taskq))))
       (fact "returns :ok when successful"
-        (let [_          (task/create-task! task-service (new-task topic))
-              {:keys [task-id]} (task/reserve-task! task-service topic pid)]
-          (task/extend-lease! task-service task-id pid) => :ok)))))
+        (let [_          (task/create-task! taskq (new-task topic))
+              {:keys [task-id]} (task/reserve-task! taskq topic pid)]
+          (task/extend-lease! taskq task-id pid) => :ok)))))
 
 (defn test-update-status!
-  [task-service]
+  [taskq]
   (let [topic (u/rand-id)
-        {:keys [task-id]} (task/create-task! task-service (new-task topic))
+        {:keys [task-id]} (task/create-task! taskq (new-task topic))
         pid (u/rand-id)]
     (facts "update-status!"
       (fact "returns updated task with only the keys defined in t.h.data-stores/Task when successful"
-        (task/reserve-task! task-service topic pid)
-        (let [utask (task/snooze! task-service task-id pid (* 5 60 1000))]
+        (task/reserve-task! taskq topic pid)
+        (let [utask (task/snooze! taskq task-id pid (* 5 60 1000))]
           (:status utask) => :snoozed
           (keys utask) => (contains TASK_KEYS :in-any-order :gaps-ok))))))
 
 (defn test-snoozing!
-  [task-service]
+  [taskq]
   (let [topic (u/rand-id)
         pid (u/rand-id)]
     (facts "snooze!"
-      (let [{:keys [task-id]} (task/create-task! task-service (new-task topic))]
+      (let [{:keys [task-id]} (task/create-task! taskq (new-task topic))]
         (fact "snoozed tasks cannot be reserved until the snooze time is elapsed"
-          (task/reserve-task! task-service topic pid)
+          (task/reserve-task! taskq topic pid)
 
-          (task/snooze! task-service task-id pid 30000)
-          (:status (task/task task-service task-id)) => :snoozed
-          (task/reserve-task! task-service topic pid) => nil)
+          (task/snooze! taskq task-id pid 30000)
+          (:status (task/task taskq task-id)) => :snoozed
+          (task/reserve-task! taskq topic pid) => nil)
 
         (fact "snoozed task can be reserved after the lease is revoked"
-          (let [task (task/task task-service task-id)]
-            (task/revoke-lease! task-service task-id (:record-ver task))
-            (:task-id (task/reserve-task! task-service topic (u/rand-id))) => task-id))))))
+          (let [task (task/task taskq task-id)]
+            (task/revoke-lease! taskq task-id (:record-ver task))
+            (:task-id (task/reserve-task! taskq topic (u/rand-id))) => task-id))))))
 
 
 (defn test-list-tasks
-  [task-service]
+  [taskq]
   ;;TODO:
   )
 
 (defn run-all-tests
-  [task-service]
-  (test-create-task task-service)
-  (test-get-task-by-id task-service)
-  (test-get-tasks-by-task-group task-service)
-  (test-reserve-task! task-service)
-  (test-extend-lease! task-service)
-  (test-update-status! task-service)
-  (test-snoozing! task-service)
-  (test-list-tasks task-service))
+  [taskq]
+  (test-create-task taskq)
+  (test-get-task-by-id taskq)
+  (test-get-tasks-by-task-group taskq)
+  (test-reserve-task! taskq)
+  (test-extend-lease! taskq)
+  (test-update-status! taskq)
+  (test-snoozing! taskq)
+  (test-list-tasks taskq))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                                                                            ;;
@@ -242,7 +242,7 @@
       (log/info "test table already exists"))))
 
 (with-state-changes [(before :facts (ensure-test-table @test-config))]
-  (let [dyn-task-service (dyn-task/dyn-task-service
-                           @test-config)]
+  (let [dyn-taskq (dyn-task/dyn-taskq
+                    @test-config)]
     (facts "dynamodb task service"
-      (run-all-tests dyn-task-service))))
+      (run-all-tests dyn-taskq))))

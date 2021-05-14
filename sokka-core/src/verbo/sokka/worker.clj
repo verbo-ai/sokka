@@ -25,8 +25,8 @@
 ;;                                                                            ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (defn- raise!
-  [task-service pid task-id error-message]
-  (safely (task/fail! task-service task-id pid error-message)
+  [taskq pid task-id error-message]
+  (safely (task/fail! taskq task-id pid error-message)
     :on-error
     :max-retries 3
     :log-level :debug
@@ -35,8 +35,8 @@
     :retry-delay [:random-exp-backoff :base 500 :+/- 0.50]))
 
 (defn- complete!
-  [task-service pid task-id]
-  (safely (task/terminate! task-service task-id pid)
+  [taskq pid task-id]
+  (safely (task/terminate! taskq task-id pid)
     :on-error
     :max-retries 3
     :log-level :debug
@@ -45,8 +45,8 @@
     :retry-delay [:random-exp-backoff :base 500 :+/- 0.50]))
 
 (defn- snooze!
-  [task-service pid task-id snooze-time]
-  (safely (task/snooze! task-service task-id pid snooze-time)
+  [taskq pid task-id snooze-time]
+  (safely (task/snooze! taskq task-id pid snooze-time)
     :on-error
     :max-retries 3
     :log-level :debug
@@ -79,18 +79,18 @@
   as an argument and returns a function with the same signature as
   `processor-fn`, calls the `processor-fn` and attempts to update the
   status of the task based on the event-name in the return value."
-  [task-service pid pfn]
+  [taskq pid pfn]
   (fn [task]
     (let [[event-name {:keys [error-message snooze-time]}]
           (pfn task)]
       (condp = event-name
         :sokka/completed
-        (complete! task-service pid (:task-id task))
+        (complete! taskq pid (:task-id task))
 
         :sokka/snoozed
-        (snooze! task-service pid (:task-id task) snooze-time)
+        (snooze! taskq pid (:task-id task) snooze-time)
 
-        (raise! task-service pid (:task-id task)
+        (raise! taskq pid (:task-id task)
           (or error-message "unknown error"))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -159,8 +159,8 @@
   "Reserve next message from the tasks service, with exponential backoff
   retries. This function will return nil if reservation was not
   successful after the set number of retries."
-  [task-service topic pid]
-  (safely (task/reserve-task! task-service topic pid)
+  [taskq topic pid]
+  (safely (task/reserve-task! taskq topic pid)
     :on-error
     :tracking :disabled
     :log-errors false
@@ -171,9 +171,9 @@
 (defn keepalive-fn!
   "Extends lease of task with the given `id` and `pid` with exponential
   backoff retry."
-  [task-service id pid]
+  [taskq id pid]
   (safely
-      (task/extend-lease! task-service id pid)
+      (task/extend-lease! taskq id pid)
     :on-error
     ;;hardcoding the retry settings for sake of
     ;;simplicity. something to do later. Intentionally setting
@@ -198,24 +198,24 @@
         true))))
 
 (defn execute!
-  [{:keys [task-service topic pid pfn keepalive-ms timeout-ms]} ctrl task]
+  [{:keys [taskq topic pid pfn keepalive-ms timeout-ms]} ctrl task]
   (ctrl/monitor! ctrl)
 
   (keepalive!* ctrl keepalive-ms
-    #(keepalive-fn! task-service (:task-id task) pid))
+    #(keepalive-fn! taskq (:task-id task) pid))
 
   (execute!*
     ctrl
     (partial (->> pfn
          wrap-ex
-         (->processor-fn task-service pid))
+         (->processor-fn taskq pid))
       task)))
 
 
 (defn- reserve-and-execute!
-  [{:keys [task-service topic pid pfn keepalive-ms timeout-ms max-poll-interval-ms] :as opts}]
+  [{:keys [taskq topic pid pfn keepalive-ms timeout-ms max-poll-interval-ms] :as opts}]
   (when-let [{:keys [task-id timeout-ms] :as task}
-             (reserve! task-service topic pid)]
+             (reserve! taskq topic pid)]
     (let [{:keys [timeout-ms] :as opts}
           (cond-> opts
             timeout-ms (assoc opts :timeout-ms timeout-ms))
@@ -225,12 +225,12 @@
       [ctrl (execute! opts ctrl task)])))
 
 (defn- cleanup-leased-tasks!
-  [{:keys [task-service monitored-tasks topic pid max-poll-interval-ms] :as opts} last-cleanup-time-ms]
-  (if (satisfies? task/LeaseSupervision task-service)
+  [{:keys [taskq monitored-tasks topic pid max-poll-interval-ms] :as opts} last-cleanup-time-ms]
+  (if (satisfies? task/LeaseSupervision taskq)
     (let [now (u/now)]
       (if (> now (+ last-cleanup-time-ms max-poll-interval-ms))
         (do
-          (supervisor/cleanup-leased-tasks! monitored-tasks task-service topic)
+          (supervisor/cleanup-leased-tasks! monitored-tasks taskq topic)
           now)
         last-cleanup-time-ms))
     (u/now)))
@@ -261,16 +261,17 @@
   The worker polls for tasks using an exponentially increasing
   sleeper function to prevent the worker from flooding the queue with
   requests during inactivity."
-  [{:keys [task-service topic pid pfn keepalive-ms timeout-ms max-poll-interval-ms] :as opts}]
+  ;;TODO: may be make all times a factor of lease.
+  [{:keys [taskq topic pid pfn keepalive-ms timeout-ms max-poll-interval-ms] :as opts}]
   (let [opts (merge opts {:monitored-tasks (agent {})
                           :keepalive-ms
-                          (-> task-service
+                          (-> taskq
                             :lease-time
                             (* 0.7)
                             int)
                           :max-poll-interval-ms 30000
                           :timeout-ms
-                          (-> task-service
+                          (-> taskq
                             :lease-time
                             (* 2))})
         close-chan  (async/chan 1)
@@ -280,7 +281,8 @@
                         (loop [sleeper-fn nil
                                last-cleanup-time-ms 0]
 
-                          (when sleeper-fn (sleeper-fn))
+                          (when sleeper-fn
+                            (sleeper-fn))
 
                           (when-not (.closed? close-chan)
                             (let [[ctrl ftr :as reserved] (reserve-and-execute! opts)
@@ -306,17 +308,23 @@
                                       (cleanup! ctrl)))
 
                                   (when-not (.closed? close-chan)
-                                    (recur nil last-cleanup-time-ms)))
+                                    (recur nil last-cleanup-time-ms')))
 
-                                (if-not (.closed? close-chan)
+                                (when-not (.closed? close-chan)
                                   (recur
                                     (or sleeper-fn
                                       (sleeper
                                         :random-exp-backoff
-                                        :base 300 :+/- 0.5 :max max-poll-interval-ms))
+                                        :base 300
+                                        :+/- 0.5
+                                        :max (:max-poll-interval-ms opts)))
                                     last-cleanup-time-ms))))))
 
                         (log/infof "Exiting worker :%s " pid)
+
+                        (catch Throwable t
+                          (log/warnf t "Error in worker %s" pid)
+                          (throw t))
 
                         (finally
                           (deliver p true))))]
