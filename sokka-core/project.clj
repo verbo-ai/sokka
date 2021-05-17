@@ -11,17 +11,12 @@
                  [prismatic/schema "1.1.12"]
                  [clj-time "0.15.2"]
                  [clojure.java-time "0.3.2"]
-                 [com.brunobonacci/mulog "0.7.1"
-                  :exclude [metosin/jsonista]]
+                 [com.brunobonacci/mulog "0.7.1"]
                  [com.brunobonacci/safely  "0.7.0-alpha1"]
                  [org.clojure/core.async "1.3.610"
                   :exclusions [org.clojure/tools.reader]]
                  [com.taoensso/nippy "3.0.0"]
-                 [amazonica "0.3.152"
-                  :exclusions [com.amazonaws/aws-java-sdk
-                               com.taoensso/nippy]]
                  [pandect "0.6.1"]
-
 
                  [com.cognitect.aws/api "0.8.505"]
                  [com.cognitect.aws/endpoints "1.1.11.1001"]

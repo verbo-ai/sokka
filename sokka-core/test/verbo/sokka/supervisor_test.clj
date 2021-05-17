@@ -4,8 +4,7 @@
             [verbo.sokka.impl.dynamodb-task :as dyn-task]
             [verbo.sokka.utils :as u]
             [clojure.tools.logging :as log]
-            [verbo.sokka.task :as task]
-            [amazonica.aws.dynamodbv2 :as dyn])
+            [verbo.sokka.task :as task])
   (:import com.amazonaws.services.dynamodbv2.model.ResourceInUseException))
 
 

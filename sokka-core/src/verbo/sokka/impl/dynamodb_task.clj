@@ -1,6 +1,5 @@
 (ns verbo.sokka.impl.dynamodb-task
-  (:require [amazonica.aws.dynamodbv2 :as dyn]
-            [clj-time.coerce :as tc]
+  (:require [clj-time.coerce :as tc]
             [clj-time.core :as t]
             [clj-time.periodic :as tp]
             [clojure.string :as str]
