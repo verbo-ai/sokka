@@ -4,9 +4,7 @@
             [verbo.sokka.impl.dynamodb-task :as dyn-task]
             [verbo.sokka.utils :as u]
             [clojure.tools.logging :as log]
-            [verbo.sokka.task :as task])
-  (:import com.amazonaws.services.dynamodbv2.model.ResourceInUseException))
-
+            [verbo.sokka.task :as task]))
 
 (defn new-task
   ([] (new-task (u/rand-id) (u/rand-id)))

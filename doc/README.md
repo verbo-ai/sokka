@@ -26,7 +26,14 @@ Main benefits include:
 - Simple, but powerful worker implementation to run tasks
   asynchronously and in-process.
 - Command line tool to create, list and manage tasks (WIP)
-- A gorgeous Web UI to visualise and manage tasks.
+- Web UI to visualise and manage tasks.
+
+
+## Documentation
+- [Terminology](doc/terminology.md)
+- [Getting Started](doc/getting-started.md)
+- [Using the CLI](doc/cli.md)
+- [Implementing a custom `TaskQ`](doc/custom-backend.md)
 
 ## What's next
 

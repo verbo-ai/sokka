@@ -1,10 +1,7 @@
 (ns verbo.sokka.utils
   (:require [taoensso.nippy :as nippy]
             [taoensso.nippy.compression :as compression])
-  (:import [com.amazonaws.services.dynamodbv2.model
-            ConditionalCheckFailedException
-            ProvisionedThroughputExceededException]
-           [org.apache.commons.codec DecoderException]
+  (:import [org.apache.commons.codec DecoderException]
            [java.util Arrays UUID Base64]
            [java.nio ByteBuffer HeapByteBuffer]
            java.util.UUID
@@ -83,15 +80,6 @@
   ([tf {:keys [LastEvaluatedKey Items] :as e}]
    (cond-> {:data (mapv tf Items)}
      LastEvaluatedKey (assoc :cursor {:last-evaluated-key LastEvaluatedKey}))))
-
-(defn with-default-errors
-  [f & args]
-  (try
-    (apply f args)
-    (catch ProvisionedThroughputExceededException e
-      (throw (ex-info "dynamo throughput exceeded" {:type :throttling-exception} e)))
-    (catch ConditionalCheckFailedException e
-      nil)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                                                                            ;;

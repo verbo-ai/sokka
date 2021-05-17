@@ -8,10 +8,7 @@
             [verbo.sokka.task :refer :all]
             [verbo.sokka.utils :as u :refer [now]]
             [safely.core :refer [safely]]
-            [verbo.sokka.aws :as aws])
-  (:import [com.amazonaws.services.dynamodbv2.model
-            ConditionalCheckFailedException
-            ProvisionedThroughputExceededException]))
+            [verbo.sokka.aws :as aws]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                                                                            ;;
@@ -465,7 +462,7 @@
 ;;           ---==| D Y A N M O D B   T A S K S   S T O R E |==----           ;;
 ;;                                                                            ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(defrecord DynamoTaskService [tasks-table reservation-index lease-time snooze-time]
+(defrecord DynamoTaskQ [tasks-table reservation-index lease-time snooze-time]
   TaskStore
 
   (create-task! [this {:keys [topic sub-topic task-group-id data] :as task-def}]
@@ -572,13 +569,19 @@
   [f & args]
   (try
     (apply f args)
-    (catch ProvisionedThroughputExceededException e
-      (throw (ex-info "dynamo throughput exceeded"
-               {:type :throttling-exception} e)))
-    (catch ConditionalCheckFailedException e
-      nil)))
+    (catch Exception e
+      (condp #(re-matches %1 %2) (-> e ex-data :__type (or "unknown"))
+        #"com.amazonaws.dynamodb.*?ProvisionedThroughputExceededException"
+        (throw (ex-info "Task already exists"
+                 {:type :forbidden
+                  :error :task-already-exists}))
 
-(defrecord DynamoTaskServiceWrapper [dyn-taskq]
+        #"com.amazonaws.dynamodb.*?ConditionalCheckFailedException"
+        nil
+
+        (throw e)))))
+
+(defrecord DynamoTaskQWrapper [dyn-taskq]
   TaskStore
   (create-task! [_ task]
     (with-default-errors create-task! dyn-taskq task))
@@ -620,8 +623,8 @@
   (let [config'    (u/deep-merge DEFAULT-CONFIG config)
         dyn-client (aws/make-client (:cognitect-aws/client config') :dynamodb)]
     (->> (assoc config' :ddb dyn-client)
-      (map->DynamoTaskService)
-      (DynamoTaskServiceWrapper.))))
+      (map->DynamoTaskQ)
+      (DynamoTaskQWrapper.))))
 
 
 (comment

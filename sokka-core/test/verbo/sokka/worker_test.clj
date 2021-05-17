@@ -6,8 +6,7 @@
             [verbo.sokka.impl.dynamodb-task :as dyn-task]
             [midje.sweet :refer :all]
             [clojure.core.async :as async]
-            [clojure.tools.logging :as log])
-  (:import com.amazonaws.services.dynamodbv2.model.ResourceInUseException))
+            [clojure.tools.logging :as log]))
 
 (facts "about monitor!"
   (fact "handles close properly"

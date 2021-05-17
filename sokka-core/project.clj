@@ -22,7 +22,13 @@
                  [com.cognitect.aws/endpoints "1.1.11.1001"]
                  [com.cognitect.aws/dynamodb "810.2.801.0"]]
 
-  :profiles {:dev
+  :global-vars {*warn-on-reflection* true}
+
+  ;; generating AOT jar alongside Clojure JAR
+  :classifiers {:aot :aot-jar}
+
+  :profiles {:aot-jar {:aot :all}
+             :dev
              {:plugins [[lein-midje "3.1.1"]]
               :dynamodb-local {:port 7000 :in-memory? true}
               :resource-paths ["resources" "dev" "test"]

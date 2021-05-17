@@ -7,8 +7,7 @@
             [verbo.sokka.test-helpers :as h]
             [verbo.sokka.utils :as u]
             [verbo.sokka.impl.dynamodb-task :as dyn-task]
-            [verbo.sokka.task :as task])
-  (:import com.amazonaws.services.dynamodbv2.model.ResourceInUseException))
+            [verbo.sokka.task :as task]))
 
 (defn new-task
   ([] (new-task (u/rand-id) (u/rand-id)))
