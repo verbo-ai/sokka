@@ -1,8 +1,11 @@
 (ns verbo.sokka.utils
   (:require [taoensso.nippy :as nippy]
             [taoensso.nippy.compression :as compression])
-  (:import [com.amazonaws.services.dynamodbv2.model ConditionalCheckFailedException
+  (:import [com.amazonaws.services.dynamodbv2.model
+            ConditionalCheckFailedException
             ProvisionedThroughputExceededException]
+           [org.apache.commons.codec DecoderException]
+           [java.util Arrays UUID Base64]
            [java.nio ByteBuffer HeapByteBuffer]
            java.util.UUID
            [java.io DataInputStream]))
@@ -29,6 +32,21 @@
         _ (.putLong buf (.getLeastSignificantBits id))]
     (-> (java.math.BigInteger. 1 (.array buf))
       (.toString Character/MAX_RADIX))))
+
+(defn ->bytes
+  [^String s]
+  (when s
+    (.getBytes s)))
+
+(defn bytes->base64
+  [b]
+  (when b
+    (.encodeToString (Base64/getEncoder) b)))
+
+(defn base64->bytes
+  [^String to-decode]
+  (when (seq to-decode)
+    (.decode (Base64/getDecoder) to-decode)))
 
 (defn lazy-mapcat
   "maps a function over a collection and
@@ -62,9 +80,9 @@
   that will be applied to all items in the result."
   ([result]
    (query-results->paginated-response identity result))
-  ([tf {:keys [last-evaluated-key items] :as e}]
-   (cond-> {:data (mapv tf items)}
-     last-evaluated-key (assoc :cursor {:last-evaluated-key last-evaluated-key}))))
+  ([tf {:keys [LastEvaluatedKey Items] :as e}]
+   (cond-> {:data (mapv tf Items)}
+     LastEvaluatedKey (assoc :cursor {:last-evaluated-key LastEvaluatedKey}))))
 
 (defn with-default-errors
   [f & args]
@@ -114,7 +132,6 @@
   (-> (merge DEFAULT_NIPPY_CONFIG config)
     (update :compressor ->compressor)))
 
-
 (defn serialize
   ([val]
    (serialize val DEFAULT_NIPPY_CONFIG))
@@ -122,6 +139,9 @@
   ([val config]
    (nippy/freeze val (->nippy-config config))))
 
+(defn bytes->byte-buffer
+  [bs]
+  (ByteBuffer/wrap bs))
 
 (def ^:const byte-array-type (type (byte-array 1)))
 
@@ -157,7 +177,6 @@
 
        (byte-array? val)  (nippy/thaw val config)
        :else val))))
-
 
 (defn scroll
   "Wraps the query function `qfn` supplied in a lazy sequence. `qfn`

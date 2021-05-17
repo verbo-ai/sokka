@@ -125,22 +125,33 @@
   [config]
   (try
     (dyn-task/create-table config)
-    (catch ResourceInUseException e
-      (log/info "test table already exists"))))
+    (catch Exception e
+      (when (some->> e
+              ex-data
+              :__type
+              (re-matches #"com.amazonaws.dynamodb.*?ResourceInUseException"))
+        (log/info "test table already exists")))))
 
 (defonce test-config
   (delay
-    {:creds {:endpoint "http://localhost:7000"}
-     :tasks-table (str "sc-tasks-v2-" (u/rand-id))}))
+    {:cognitect-aws/client
+     {:endpoint-override
+      {:all {:port 7000
+             :region "us-east-1"
+             :hostname "localhost"
+             :protocol :http}}}
+     :lease-time 1000
+     :tasks-table (str "sokka-tasks" (u/rand-id))}))
 
 (with-state-changes [(before :facts (ensure-test-table @test-config))]
   (let [dyn-taskq (dyn-task/dyn-taskq
-                           @test-config)]
+                    @test-config)]
     (facts "about worker"
       (fact "it is possible to start stop the worker gracefully"
         (let [topic (u/rand-id)
               pid (u/rand-id)
               stop-fn (sut/worker {:taskq dyn-taskq
+                                   :lease-time-ms (:lease-time @test-config)
                                    :topic topic
                                    :pid pid
                                    :pfn (constantly [:sokka/completed])})]
@@ -155,6 +166,7 @@
                    :data :noop})]
           (with-redefs [ctrl/new-control (constantly test-ctrl)]
             (let [stop-fn (sut/worker {:taskq dyn-taskq
+                                       :lease-time-ms (:lease-time @test-config)
                                        :topic topic
                                        :pid pid
                                        :pfn (fn [_]
@@ -175,11 +187,9 @@
                   (stop-fn)
                   (ctrl/cleanup! test-ctrl))))))))))
 
-
-
 (with-state-changes [(before :facts (ensure-test-table @test-config))]
   (let [dyn-taskq (dyn-task/dyn-taskq
-                           @test-config)
+                    @test-config)
         topic (u/rand-id)
         pid (u/rand-id)
         db (atom {})
@@ -199,15 +209,16 @@
                :data {:op :baz}})]
 
     (facts "worker schedules all tasks and updates the status"
-      (let [stop-fn (sut/worker {:taskq dyn-taskq
-                                 :topic topic
-                                 :pid pid
-                                 :pfn test-task-handler})]
-
+      (let [stop-fn (sut/worker
+                      {:taskq dyn-taskq
+                       :lease-time-ms (:lease-time @test-config)
+                       :topic topic
+                       :pid pid
+                       :pfn test-task-handler})]
         ;; wait for task to be picked up
         ;; TODO: more non-deterministic tests, cant think of a
         ;; better option at this point, something to fix later
-        (deref (promise) 10000 :timeout)
+        (deref (promise) 3000 :timeout)
 
         (deref (stop-fn) 600 :didnt-complete)
 
@@ -219,7 +230,7 @@
           (:status (task/task dyn-taskq (:task-id bar))) => :terminated
           (:status (task/task dyn-taskq (:task-id baz))) => :terminated)))))
 
-#_
+
 (with-state-changes [(before :facts (ensure-test-table @test-config))]
   (let [dyn-taskq (dyn-task/dyn-taskq
                     @test-config)
@@ -248,6 +259,7 @@
 
     (facts "worker schedules all tasks and updates the status"
       (let [stop-fn (sut/worker {:taskq dyn-taskq
+                                 :lease-time-ms (:lease-time @test-config)
                                  :topic topic
                                  :pid pid
                                  :pfn test-task-handler})]
@@ -255,7 +267,7 @@
         ;; wait for task to be picked up
         ;; TODO: more non-deterministic tests, cant think of a
         ;; better option at this point, something to fix later
-        (deref (promise) 2000 :timeout)
+        (deref (promise) 6000 :timeout)
 
         (deref (stop-fn) 600 :didnt-complete)
 

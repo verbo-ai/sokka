@@ -16,8 +16,7 @@
                  [com.brunobonacci/safely  "0.7.0-alpha1"]
                  [org.clojure/core.async "1.3.610"
                   :exclusions [org.clojure/tools.reader]]
-                 [com.taoensso/nippy "3.0.0"
-                  :exclusions [com.taoensso/encore]]
+                 [com.taoensso/nippy "3.0.0"]
                  [amazonica "0.3.152"
                   :exclusions [com.amazonaws/aws-java-sdk
                                com.taoensso/nippy]]

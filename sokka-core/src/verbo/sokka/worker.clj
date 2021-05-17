@@ -225,12 +225,13 @@
       [ctrl (execute! opts ctrl task)])))
 
 (defn- cleanup-leased-tasks!
-  [{:keys [taskq monitored-tasks topic pid max-poll-interval-ms] :as opts} last-cleanup-time-ms]
+  [{:keys [taskq monitored-tasks topic lease-time-ms max-poll-interval-ms] :as opts} last-cleanup-time-ms]
   (if (satisfies? task/LeaseSupervision taskq)
     (let [now (u/now)]
       (if (> now (+ last-cleanup-time-ms max-poll-interval-ms))
         (do
-          (supervisor/cleanup-leased-tasks! monitored-tasks taskq topic)
+          (supervisor/cleanup-leased-tasks! monitored-tasks taskq topic
+            {:lease-time-ms lease-time-ms})
           now)
         last-cleanup-time-ms))
     (u/now)))
@@ -262,18 +263,11 @@
   sleeper function to prevent the worker from flooding the queue with
   requests during inactivity."
   ;;TODO: may be make all times a factor of lease.
-  [{:keys [taskq topic pid pfn keepalive-ms timeout-ms max-poll-interval-ms] :as opts}]
+  [{:keys [taskq topic pid pfn lease-time-ms keepalive-ms timeout-ms max-poll-interval-ms] :as opts}]
   (let [opts (merge opts {:monitored-tasks (agent {})
-                          :keepalive-ms
-                          (-> taskq
-                            :lease-time
-                            (* 0.7)
-                            int)
-                          :max-poll-interval-ms 30000
-                          :timeout-ms
-                          (-> taskq
-                            :lease-time
-                            (* 2))})
+                          :keepalive-ms (int (* lease-time-ms 0.7))
+                          :max-poll-interval-ms lease-time-ms
+                          :timeout-ms (* 2 lease-time-ms)})
         close-chan  (async/chan 1)
         p           (promise)
         proc        (future

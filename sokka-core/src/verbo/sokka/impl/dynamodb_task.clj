@@ -10,7 +10,9 @@
             [verbo.sokka.utils :as u :refer [now]]
             [safely.core :refer [safely]]
             [verbo.sokka.aws :as aws])
-  (:import com.amazonaws.services.dynamodbv2.model.ConditionalCheckFailedException))
+  (:import [com.amazonaws.services.dynamodbv2.model
+            ConditionalCheckFailedException
+            ProvisionedThroughputExceededException]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                                                                            ;;
@@ -23,32 +25,29 @@
 
 (def ^:const DEFAULT-CONFIG
   {;; the aws region's endpoint to contact
-   :creds {:endpoint :eu-west-1}
-
-   :client {:region "eu-west-1"}
-
+   :cognitect-aws/client {:region "eu-west-1"}
    ;; the name of the table
-   :tasks-table         "sc-tasks-v2"
+   :tasks-table "sc-tasks-v2"
 
    ;; the initial read and write capacity
    ;; for the table and indices
+   :throughput-provisioned? true
    :read-capacity-units      10
    :write-capacity-units     10
 
    ;; The name of the index used for the reservation
    ;; queries.
-   :reservation-index        "reservation-index"
-
+   :reservation-index "reservation-index"
    ;; The name of the index used for the task-group queries
-   :task-scan-index         "task-scan-index"
+   :task-scan-index "task-scan-index"
+   ;; index name used to query tasks by task-group-id
+   :task-group-index "task-group-index"
 
    ;; The default reservation lease time in millis.
    ;; After this time the reserved item, if not acknowledged,
    ;; will be available to grant reservation to other processes.
-   :lease-time               DEFAULT_LEASE_TIME
-
-   :snooze-time              DEFAULT_LEASE_TIME})
-
+   :lease-time DEFAULT_LEASE_TIME
+   :snooze-time DEFAULT_LEASE_TIME})
 
 (defn ddb-rec->m
   "converts form a dynamo record representation to a clojure map"
@@ -61,7 +60,10 @@
   "converts form a Clojure map to a dynamo record representation"
   [r]
   (->> r
-    (map (fn [[k v]] [k {(if (number? v) :N :S) (str v)}]))
+    (map (fn [[k v]]
+           [k (cond
+                (number? v) {:N v}
+                :else {:S (name v)})]))
     (into {})))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -72,59 +74,71 @@
 (defn create-table
   "Creates the tables for the DurableQueue and all necessary indexes"
   [config]
-  (let [{:keys [creds tasks-table reservation-index task-group-index task-scan-index
+  (let [{:keys [cognitect-aws/client tasks-table reservation-index
+                task-group-index task-scan-index throughput-provisioned?
                 read-capacity-units write-capacity-units]}
-        (merge DEFAULT-CONFIG config)]
-    (dyn/create-table
-      creds
-      {:table-name tasks-table
-       :key-schema
-       [{:attribute-name "task-group-id"
-         :key-type "HASH"}
-        {:attribute-name "task-id"
-         :key-type "RANGE"}]
-       :attribute-definitions
-       [{:attribute-name "task-id"
-         :attribute-type "S"}
-        {:attribute-name "__topic-key"
-         :attribute-type "S"}
-        {:attribute-name "__topic-scan-hkey"
-         :attribute-type "S"}
-        {:attribute-name "__topic-scan-rkey"
-         :attribute-type "S"}
-        {:attribute-name "task-group-id"
-         :attribute-type "S"}
-        {:attribute-name "__reserv-key"
-         :attribute-type "S"}]
+        (u/deep-merge DEFAULT-CONFIG config)
+        ddb (aws/make-client client :dynamodb)]
+    (cond->> {:TableName tasks-table
+              :KeySchema
+              [{:AttributeName "task-id" :KeyType "HASH"}]
 
-       :provisioned-throughput
-       {:read-capacity-units read-capacity-units
-        :write-capacity-units write-capacity-units}
+              :AttributeDefinitions
+              [{:AttributeName "task-id" :AttributeType "S"}
+               {:AttributeName "__topic-key" :AttributeType "S"}
+               {:AttributeName "__topic-scan-hkey" :AttributeType "S"}
+               {:AttributeName "__topic-scan-rkey" :AttributeType "S"}
+               {:AttributeName "task-group-id" :AttributeType "S"}
+               {:AttributeName "__reserv-key" :AttributeType "S"}]
+              ;; billing mode
+              :BillingMode "PAY_PER_REQUEST"
+              ;; indexes
+              :GlobalSecondaryIndexes
+              [(cond-> {:IndexName task-group-index
+                        :KeySchema
+                        [{:AttributeName "task-group-id"
+                          :KeyType "HASH"}
+                         {:AttributeName "task-id"
+                          :KeyType "RANGE"}]
+                        :Projection {:ProjectionType "ALL"}}
+                 throughput-provisioned?
+                 (assoc :ProvisionedThroughPut
+                   {:ReadCapacityUnits read-capacity-units
+                    :WriteCapacityUnits write-capacity-units}))
 
-       ;; indexes
-       :global-secondary-indexes
-       ;; reservation-index
-       [{:index-name reservation-index
-         :key-schema
-         [{:attribute-name "__topic-key"
-           :key-type "HASH"}
-          {:attribute-name "__reserv-key"
-           :key-type "RANGE"}]
-         :projection {:projection-type "ALL"}
-         :provisioned-throughput
-         {:read-capacity-units read-capacity-units
-          :write-capacity-units write-capacity-units}}
+               ;; reservation-index
+               (cond-> {:IndexName reservation-index
+                        :KeySchema
+                        [{:AttributeName "__topic-key"
+                          :KeyType "HASH"}
+                         {:AttributeName "__reserv-key"
+                          :KeyType "RANGE"}]
+                        :Projection {:ProjectionType "ALL"}}
+                 throughput-provisioned?
+                 (assoc :ProvisionedThroughPut
+                   {:ReadCapacityUnits read-capacity-units
+                    :WriteCapacityUnits write-capacity-units}))
 
-        {:index-name task-scan-index
-         :key-schema
-         [{:attribute-name "__topic-scan-hkey"
-           :key-type "HASH"}
-          {:attribute-name "__topic-scan-rkey"
-           :key-type "RANGE"}]
-         :projection {:projection-type "ALL"}
-         :provisioned-throughput
-         {:read-capacity-units read-capacity-units
-          :write-capacity-units write-capacity-units}}]})))
+               (cond-> {:IndexName task-scan-index
+                        :KeySchema
+                        [{:AttributeName "__topic-scan-hkey"
+                          :KeyType "HASH"}
+                         {:AttributeName "__topic-scan-rkey"
+                          :KeyType "RANGE"}]
+                        :Projection {:ProjectionType "ALL"}}
+                 throughput-provisioned?
+                 (assoc :ProvisionedThroughPut
+                   {:ReadCapacityUnits read-capacity-units
+                    :WriteCapacityUnits write-capacity-units}))]}
+
+      throughput-provisioned?
+      (merge {:BillingMode "PROVISIONED"
+              :ProvisionedThroughPut
+              {:ReadCapacityUnits read-capacity-units
+               :WriteCapacityUnits write-capacity-units}})
+
+      :default
+      (aws/invoke! ddb :CreateTable))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                                                                            ;;
@@ -134,8 +148,9 @@
 (defn- parse-task*
   [task]
   (some-> task
+    ddb-rec->m
     (update :status keyword)
-    (update :data u/deserialize)))
+    (update :data (comp u/deserialize u/base64->bytes))))
 
 (defn- ->returnable-item
   [task]
@@ -202,21 +217,13 @@
   (as-> task $
     ;; ver is used for Multiversion Concurrency Control and optimistic lock
     (update $ :record-ver (fnil inc 0))
-
     ;; ensure that lease is always populated
     (update $ :lease (fnil identity 0))
-
     ;; ensure that status is populated
     (update $ :status (fnil identity :starting))
-
-    (update $ :data u/serialize)
-
     (assoc $ :__topic-key (->topic-key topic status))
-
     (assoc $ :__topic-scan-hkey (->topic-scan-hkey topic))
-
     (assoc $ :__topic-scan-rkey (->topic-scan-rkey sub-topic (status-flags $)))
-
     ;; __reserv_key is used for adding item which can be reserved to
     ;; the appropriate index (reservation-index).
     (assoc $ :__reserv-key (format "%03d%020d" (status-flags $) lease))))
@@ -225,28 +232,33 @@
   "This function uses MVCC to ensure that updates are not conflicting
    with other concurrent updates, causing data to be overwritten."
   {:style/indent 1}
-  [{:keys [creds tasks-table] :as aws-config} {:keys [record-ver] :as item}]
-  (let [updated-item (inject-derived-attributes item)]
+  [{:keys [ddb tasks-table] :as aws-config} {:keys [record-ver] :as item}]
+  (let [item' (inject-derived-attributes item)
+        serialized  (update item' :data (comp u/bytes->base64 u/serialize))]
     ;; checking whether it is a first-time insert or update
     (if-not record-ver
       ;; if it is a first time insert then no item with the same id should
       ;; already exists
-      (dyn/put-item
-        creds
-        :table-name tasks-table
-        :item updated-item
-        :condition-expression "attribute_not_exists(#taskid)"
-        :expression-attribute-names {"#taskid" "task-id"})
+      (aws/invoke! ddb
+        :PutItem
+        {:TableName tasks-table
+         :Item (m->ddb-rec serialized)
+         :ConditionExpression
+         "attribute_not_exists(#taskid)"
+         :ExpressionAttributeNames
+         {"#taskid" "task-id"}})
       ;; if it is performing an update then the condition is that
       ;; record-ver must be unchanged in the db (no concurrent updates)
-      (dyn/put-item
-        creds
-        :table-name tasks-table
-        :item updated-item
-        :condition-expression "#curver = :oldver"
-        :expression-attribute-names {"#curver" "record-ver"}
-        :expression-attribute-values {":oldver" record-ver}))
-    updated-item))
+      (aws/invoke! ddb
+        :PutItem
+        {:TableName tasks-table
+         :Item (m->ddb-rec serialized)
+         :ConditionExpression "#curver = :oldver"
+         :ExpressionAttributeNames
+         {"#curver" "record-ver"}
+         :ExpressionAttributeValues
+         {":oldver" {:N record-ver}}}))
+    item'))
 
 (defn- find-reservable-tasks
   "Queries the reservation index to find tasks that can be
@@ -268,42 +280,38 @@
              ":reserved" {:S reserve-key}}
             :Limit limit})
       :Items
-      (map (comp parse-task* ddb-rec->m)))))
+      (map parse-task*))))
 
 (defn- find-running-and-snoozed-tasks
   "Queries the reservation index to find tasks that are running/snoozed."
-  [{:keys [creds tasks-table reservation-index] :as config} topic
+  [{:keys [ddb tasks-table reservation-index] :as config} topic
    {:keys [limit last-evaluated-key] :as cursor}]
-  (->> (cond-> {:table-name tasks-table
-                :index-name reservation-index
-                :select "ALL_ATTRIBUTES"
-                :key-condition-expression
+  (->> (cond-> {:TableName tasks-table
+                :IndexName reservation-index
+                :Select "ALL_ATTRIBUTES"
+                :KeyConditionExpression
                 "#topic = :topic  AND #reserv between :from AND :to"
-                :expression-attribute-values
-                {":topic" (->topic-key topic :running-or-snoozed) ;;FIXME: WTF dude!
-                 ":from" (format "%03d%020d" 150 0)
-                 ":to"   (format "%03d%020d" 201 0)}
-                :expression-attribute-names
+                :ExpressionAttributeValues
+                {":topic" {:S (->topic-key topic :running-or-snoozed)} ;;FIXME: WTF dude!
+                 ":from" {:S (format "%03d%020d" 150 0)}
+                 ":to"   {:S (format "%03d%020d" 201 0)}}
+                :ExpressionAttributeNames
                 {"#reserv" "__reserv-key"
                  "#topic" "__topic-key"}
-                :limit limit}
-         last-evaluated-key (assoc :exclusive-start-key last-evaluated-key))
-    (dyn/query creds)
+                :Limit limit}
+         last-evaluated-key (assoc :ExclusiveStartKey last-evaluated-key))
+    (aws/invoke! ddb :Query)
     (u/query-results->paginated-response
         parse-task*)))
 
 (defn- get-task-by-id
   [{:keys [ddb tasks-table]} task-id]
-  (let [[task-group-id __task-id] (str/split task-id #"--")]
-    (when (every? not-empty [task-group-id __task-id])
-      (->> (aws/invoke! ddb
-             :GetItem
-             {:TableName tasks-table
-              :Key {"task-group-id" {:S task-group-id}
-                    "task-id" {:S task-id}}})
-        :Item
-        ddb-rec->m
-        parse-task*))))
+  (->> (aws/invoke! ddb
+         :GetItem
+         {:TableName tasks-table
+          :Key {"task-id" {:S task-id}}})
+    :Item
+    parse-task*))
 
 (defn- get-tasks-by-task-group-id
   ;; TODO: paginate
@@ -311,6 +319,7 @@
   (->> (aws/invoke! ddb
          :Query
          {:TableName tasks-table
+          :IndexName task-group-index
           :Select "ALL_ATTRIBUTES"
           :KeyConditionExpression "#tgid = :tgid"
           :ExpressionAttributeNames
@@ -319,11 +328,11 @@
           {":tgid" {:S task-group-id}}
           :Limit 200})
     :Items
-    (map (comp parse-task* ddb-rec->m))))
+    (map parse-task*)))
 
 (defn- list-tasks-by-topic-scan-hkey
   "see: ->topic-scan-hkey*"
-  [{:keys [creds tasks-table task-scan-index]}
+  [{:keys [ddb tasks-table task-scan-index]}
    {:keys [sub-topic status from to] :as filters}
    hk
    {:keys [limit last-evaluated-key] :as cursor}]
@@ -333,24 +342,25 @@
         to-range-key   (->topic-scan-rkey* to
                          (or sub-topic "default")
                          (if status (status-flags* status) 999))]
-    (->> (dyn/query creds
-           (cond-> {:table-name tasks-table
-                    :index-name task-scan-index
-                    :key-condition-expression "#h = :h AND #r between :fr AND :tr"
-                    :expression-attribute-names
+    (->> (aws/invoke! ddb
+           :Query
+           (cond-> {:TableName tasks-table
+                    :IndexName task-scan-index
+                    :KeyConditionExpression "#h = :h AND #r between :fr AND :tr"
+                    :ExpressionAttributeNames
                     {"#h" "__topic-scan-hkey"
                      "#r" "__topic-scan-rkey"}
-                    :expression-attribute-values
-                    {":h" hk
-                     ":fr"  from-range-key
-                     ":tr"  to-range-key}}
-             limit (assoc :limit limit)
-             last-evaluated-key (assoc :exclusive-start-key last-evaluated-key)))
+                    :ExpressionAttributeValues
+                    {":h" {:S hk}
+                     ":fr" {:S from-range-key}
+                     ":tr" {:S to-range-key}}}
+             limit (assoc :Limit limit)
+             last-evaluated-key (assoc :ExclusiveStartKey last-evaluated-key)))
       (u/query-results->paginated-response (comp ->returnable-item parse-task*)))))
 
 
 (defn list-tasks*
-  [{:keys [creds tasks-table task-scan-index] :as cfg}
+  [{:keys [ddb tasks-table task-scan-index] :as cfg}
    {:keys [topic sub-topic status from to] :as filters}
    {:keys [inner-cursor limit next-period] :as cursor}]
   (when-not (= next-period -1)
@@ -400,8 +410,11 @@
                {:error :task-not-found :task-id task-id})))
 
     (when (and record-ver (not= record-ver (:record-ver task)))
-      (throw (ex-info "Task not found."
-               {:error :task-not-found :task-id task-id})))
+      (throw (ex-info "Task updated elsewhere."
+               {:error :task-concurrently-updated
+                :task-id task-id
+                :task (select-keys task [:task-id :status :record-ver])
+                :record-ver record-ver})))
 
     (when-not (target-status allowed-transitions)
       (throw (ex-info "Invalid status transition requested."
@@ -448,41 +461,34 @@
       (->> (safe-put-item this)
         ->returnable-item))))
 
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                                                                            ;;
 ;;           ---==| D Y A N M O D B   T A S K S   S T O R E |==----           ;;
 ;;                                                                            ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(defrecord DynamoTaskService [monitored-tasks
-                              creds
-                              tasks-table
-                              reservation-index
-                              lease-time
-                              snooze-time]
+(defrecord DynamoTaskService [tasks-table reservation-index lease-time snooze-time]
   TaskStore
 
   (create-task! [this {:keys [topic sub-topic task-group-id data] :as task-def}]
-    (assert #(nil? (:task-id task-def)) "can't set task-id")
     (try
-      (let [rnd-id (u/rand-id)
-            task-group-id  (or task-group-id
-                             (-> rnd-id
-                               sha256
-                               (subs 0 7)))
-            task-id       (str/join "--" [task-group-id rnd-id])
+      (let [task-id (or (:task-id task-def) (u/rand-id))
             task-def (-> task-def
-                       (assoc :task-id task-id
-                              :sub-topic (or sub-topic "default")
-                              :task-group-id task-group-id
+                       (update :task-id (fnil identity task-id))
+                       (update :task-group-id (fnil identity task-id))
+                       (assoc :sub-topic (or sub-topic "default")
                               :status :starting))]
         (safe-put-item this task-def)
         task-def)
-      (catch ConditionalCheckFailedException e
-        (log/debug e "create-task! failed - task already exists")
-        (throw (ex-info "Task already exists"
-                 {:type :forbidden
-                  :error :task-already-exists})))))
+      (catch Exception e
+        (if (some->> e
+              ex-data
+              :__type
+              (re-matches #"com.amazonaws.dynamodb.*?ConditionalCheckFailedException"))
+          (do (log/debug e "create-task! failed - task already exists")
+              (throw (ex-info "Task already exists"
+                       {:type :forbidden
+                        :error :task-already-exists})))
+          (throw e)))))
 
   (task [this task-id]
     (some-> (get-task-by-id this task-id)
@@ -503,8 +509,7 @@
               (assoc task
                 :status :running
                 :pid  pid
-                :lease (+ (now) lease-time)))
-          parse-task*))))
+                :lease (+ (now) lease-time)))))))
 
   (extend-lease! [this task-id pid]
     (let [task (get-task-by-id this task-id)
@@ -564,11 +569,60 @@
   (list-leased-tasks [this topic cursor]
     (find-running-and-snoozed-tasks this topic cursor)))
 
+(defn- with-default-errors
+  [f & args]
+  (try
+    (apply f args)
+    (catch ProvisionedThroughputExceededException e
+      (throw (ex-info "dynamo throughput exceeded"
+               {:type :throttling-exception} e)))
+    (catch ConditionalCheckFailedException e
+      nil)))
+
+(defrecord DynamoTaskServiceWrapper [dyn-taskq]
+  TaskStore
+  (create-task! [_ task]
+    (with-default-errors create-task! dyn-taskq task))
+
+  (task [_ task-id]
+    (with-default-errors task dyn-taskq task-id))
+
+  (tasks [_ task-group-id]
+    (with-default-errors tasks dyn-taskq task-group-id))
+
+  (list-tasks [_ filters cursor]
+    (with-default-errors list-tasks dyn-taskq filters cursor))
+
+  (reserve-task! [_ topic pid]
+    (with-default-errors reserve-task! dyn-taskq topic pid))
+
+  (extend-lease! [_ task-id pid]
+    (with-default-errors extend-lease! dyn-taskq task-id pid))
+
+  (terminate! [_ task-id pid]
+    (with-default-errors terminate! dyn-taskq task-id pid))
+
+  (snooze! [_ task-id pid snooze-time]
+    (with-default-errors snooze! dyn-taskq task-id pid snooze-time))
+
+  (revoke-lease! [_ task-id record-ver]
+    (with-default-errors revoke-lease! dyn-taskq task-id record-ver))
+
+  (fail! [_ task-id pid error]
+    (with-default-errors fail! dyn-taskq task-id pid error))
+
+  LeaseSupervision
+  (list-leased-tasks [this topic cursor]
+    (with-default-errors list-leased-tasks dyn-taskq topic cursor)))
+
+
 (defn dyn-taskq
   [config]
   (let [config'    (u/deep-merge DEFAULT-CONFIG config)
-        dyn-client (aws/make-client (:client config') :dynamodb)]
-    (map->DynamoTaskService (assoc config' :ddb dyn-client))))
+        dyn-client (aws/make-client (:cognitect-aws/client config') :dynamodb)]
+    (->> (assoc config' :ddb dyn-client)
+      (map->DynamoTaskService)
+      (DynamoTaskServiceWrapper.))))
 
 
 (comment
@@ -585,9 +639,9 @@
                                        :protocol :http}}}))))
 
 
-  (aws/help (:ddb taskq) :Query)
+  (aws/help (:ddb taskq) :CreateTable)
 
-  (aws/invoke! ddb :ListTables {})
+  (aws/invoke! ddb :CreateTable {})
 
   (dyn/list-tables {:endpoint "http://localhost:7000"})
 

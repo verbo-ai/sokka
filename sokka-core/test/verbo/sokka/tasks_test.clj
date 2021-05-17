@@ -27,7 +27,7 @@
   #{:task-id :task-group-id :status :topic})
 
 (defn test-create-task
-  [taskq]
+  [{:keys [lease-time]} taskq]
   (facts "create-task!"
     (let [task-def   (new-task)
           task       (task/create-task! taskq task-def)]
@@ -36,17 +36,10 @@
       (fact "sets default status to :starting"
         (:status task) => :starting)
       (fact "only returns keys defined in t.h.data-stores/Task"
-        (keys task) => (contains TASK_KEYS :in-any-order :gaps-ok)))
-    (fact "injects parent tasks when parent shards are supplied"
-      (let [td (-> (new-task)
-                 (assoc :parent-tasks [(u/rand-id) (u/rand-id)]))
-            {:keys [parent-tasks]} (task/create-task! taskq td)]
-        (count parent-tasks) => 2))))
+        (keys task) => (contains TASK_KEYS :in-any-order :gaps-ok)))))
 
 (defn test-get-task-by-id
-  [taskq]
-  (taoensso.timbre/spy :info taskq)
-
+  [{:keys [lease-time]} taskq]
   (facts "get-task by task-id"
     (fact "returns nil when task not found"
       (task/task taskq (u/rand-id)) => nil)
@@ -59,7 +52,7 @@
         (:status task) => keyword?))))
 
 (defn test-get-tasks-by-task-group
-  [taskq]
+  [{:keys [lease-time]} taskq]
   (facts "get-tasks by taskq"
     (let [topic (u/rand-id)
           task-group-id (u/rand-id)
@@ -79,7 +72,7 @@
           (:status (first tasks)) => keyword?)))))
 
 (defn test-reserve-task!
-  [taskq]
+  [{:keys [lease-time]} taskq]
   (let [pid (u/rand-id)
         topic (u/rand-id)]
     (facts "reserve-task!"
@@ -96,7 +89,7 @@
         (fact "sets pid of reserved task to pid supplied"
           (:pid reserved) => pid)
         (fact "sets lease to current-time + lease-time"
-          (:lease reserved) => (+ ctime (:lease-time taskq))))
+          (:lease reserved) => (+ ctime lease-time)))
 
       (let [task-def (new-task topic)
             {:keys [task-id]} (task/create-task! taskq task-def)]
@@ -136,7 +129,7 @@
             (task/reserve-task! taskq topic pid))) => nil))))
 
 (defn test-extend-lease!
-  [taskq]
+  [{:keys [lease-time]} taskq]
   (let [topic (u/rand-id)
         task-group-id (u/rand-id)
         pid (u/rand-id)]
@@ -162,7 +155,7 @@
       (fact "throws :lease-expired when lease of the task is already expired"
         (let [_          (task/create-task! taskq (new-task topic))
               {:keys [task-id]} (task/reserve-task! taskq topic pid)
-              lease-time (:lease-time taskq)
+              lease-time lease-time
               later (+ (u/now) (* 2 lease-time))]
           (with-redefs [u/now (constantly later)]
             (task/extend-lease! taskq task-id pid)) =>
@@ -173,14 +166,14 @@
               ctime (u/now)]
           (with-redefs [u/now (constantly ctime)]
             (task/extend-lease! taskq task-id pid)) => :ok
-          (:lease (task/task taskq task-id)) => (+ ctime (:lease-time taskq))))
+          (:lease (task/task taskq task-id)) => (+ ctime lease-time )))
       (fact "returns :ok when successful"
         (let [_          (task/create-task! taskq (new-task topic))
               {:keys [task-id]} (task/reserve-task! taskq topic pid)]
           (task/extend-lease! taskq task-id pid) => :ok)))))
 
 (defn test-update-status!
-  [taskq]
+  [{:keys [lease-time]} taskq]
   (let [topic (u/rand-id)
         {:keys [task-id]} (task/create-task! taskq (new-task topic))
         pid (u/rand-id)]
@@ -192,7 +185,7 @@
           (keys utask) => (contains TASK_KEYS :in-any-order :gaps-ok))))))
 
 (defn test-snoozing!
-  [taskq]
+  [{:keys [lease-time]} taskq]
   (let [topic (u/rand-id)
         pid (u/rand-id)]
     (facts "snooze!"
@@ -211,20 +204,20 @@
 
 
 (defn test-list-tasks
-  [taskq]
+  [{:keys [lease-time]} taskq]
   ;;TODO:
   )
 
 (defn run-all-tests
-  [taskq]
-  (test-create-task taskq)
-  (test-get-task-by-id taskq)
-  (test-get-tasks-by-task-group taskq)
-  (test-reserve-task! taskq)
-  (test-extend-lease! taskq)
-  (test-update-status! taskq)
-  (test-snoozing! taskq)
-  (test-list-tasks taskq))
+  [config taskq]
+  (test-create-task config taskq)
+  (test-get-task-by-id config taskq)
+  (test-get-tasks-by-task-group config taskq)
+  (test-reserve-task! config taskq)
+  (test-extend-lease! config taskq)
+  (test-update-status! config taskq)
+  (test-snoozing! config taskq)
+  (test-list-tasks config taskq))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                                                                            ;;
@@ -233,22 +226,27 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (defonce test-config
   (delay
-    {:creds {:endpoint "http://localhost:7000"}
-     :client {:endpoint-override
-              {:all {:port 7000
-                     :region "us-east-1"
-                     :hostname "localhost"
-                     :protocol :http}}}
-     :tasks-table (str "sc-tasks-v2-" (u/rand-id))}))
+    {:cognitect-aws/client
+     {:endpoint-override
+      {:all {:port 7000
+             :region "us-east-1"
+             :hostname "localhost"
+             :protocol :http}}}
+     :lease-time (* 2 60 1000)
+     :tasks-table (str "sokka-tasks-" (u/rand-id))}))
 
 (defn ensure-test-table
   [config]
   (try
     (dyn-task/create-table config)
-    (catch ResourceInUseException e
-      (log/info "test table already exists"))))
+    (catch Exception e
+      (when (some->> e
+              ex-data
+              :__type
+              (re-matches #"com.amazonaws.dynamodb.*?ResourceInUseException"))
+        (log/info "test table already exists")))))
 
 (with-state-changes [(before :facts (ensure-test-table @test-config))]
   (let [dyn-taskq (dyn-task/dyn-taskq @test-config)]
     (facts "dynamodb task service"
-      (run-all-tests dyn-taskq))))
+      (run-all-tests @test-config dyn-taskq))))
