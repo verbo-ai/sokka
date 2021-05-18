@@ -8,7 +8,8 @@
             [verbo.sokka.task :refer :all]
             [verbo.sokka.utils :as u :refer [now]]
             [safely.core :refer [safely]]
-            [verbo.sokka.aws :as aws]))
+            [verbo.sokka.aws :as aws]
+            [com.brunobonacci.mulog :as mu]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                                                                            ;;
@@ -58,7 +59,7 @@
   (->> r
     (map (fn [[k v]]
            [k (cond
-                (number? v) {:N v}
+                (number? v) {:N (str v)}
                 :else {:S (name v)})]))
     (into {})))
 
@@ -227,7 +228,6 @@
 (defn- safe-put-item
   "This function uses MVCC to ensure that updates are not conflicting
    with other concurrent updates, causing data to be overwritten."
-  {:style/indent 1}
   [{:keys [ddb tasks-table] :as aws-config} {:keys [record-ver] :as item}]
   (let [item' (inject-derived-attributes item)
         serialized  (update item' :data (comp u/bytes->base64 u/serialize))]
@@ -248,7 +248,7 @@
       (aws/invoke! ddb
         :PutItem
         {:TableName tasks-table
-         :Item (m->ddb-rec serialized)
+         :Item  (m->ddb-rec serialized)
          :ConditionExpression "#curver = :oldver"
          :ExpressionAttributeNames
          {"#curver" "record-ver"}

@@ -6,7 +6,8 @@
             [safely.core :refer [sleeper safely]]
             [verbo.sokka.supervisor :as supervisor]
             [verbo.sokka.utils :as u]
-            [verbo.sokka.ctrl :as ctrl]))
+            [verbo.sokka.ctrl :as ctrl]
+            [com.brunobonacci.mulog :as mu]))
 
 (def ^:const DEFAULT-TASK-KEEPALIVE-TIME (* 3 60 1000))
 
@@ -26,52 +27,69 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (defn- raise!
   [taskq pid task-id error-message]
-  (safely (task/fail! taskq task-id pid error-message)
+  (safely
+    (task/fail! taskq task-id pid error-message)
     :on-error
     :max-retries 3
     :log-level :debug
-    :tracking :disabled
+    :tracking :enabled
+    :retryable-error? (fn [e] (some-> e ex-data :type (= :throttling-exception)))
     :log-stacktrace false
     :retry-delay [:random-exp-backoff :base 500 :+/- 0.50]))
 
 (defn- complete!
   [taskq pid task-id]
-  (safely (task/terminate! taskq task-id pid)
+  (safely
+    (task/terminate! taskq task-id pid)
     :on-error
     :max-retries 3
     :log-level :debug
-    :tracking :disabled
+    :tracking :enabled
+    :retryable-error? (fn [e] (some-> e ex-data :type (= :throttling-exception)))
     :log-stacktrace false
     :retry-delay [:random-exp-backoff :base 500 :+/- 0.50]))
 
 (defn- snooze!
   [taskq pid task-id snooze-time]
-  (safely (task/snooze! taskq task-id pid snooze-time)
+  (safely
+    (task/snooze! taskq task-id pid snooze-time)
     :on-error
     :max-retries 3
     :log-level :debug
-    :tracking :disabled
+    :tracking :enabled
+    :retryable-error? (fn [e] (some-> e ex-data :type (= :throttling-exception)))
     :log-stacktrace false
     :retry-delay [:random-exp-backoff :base 500 :+/- 0.50]))
+
+(defn ok
+  ([] [:sokka/completed nil]))
+
+(defn failed
+  ([] (failed {}))
+  ([{:keys [error-message]}]
+   [:sokka/failed (cond-> nil error-message (assoc :error-message error-message))]))
+
+(defn snoozed
+  ([] (snoozed {}))
+  ([{:keys [snooze-time]}]
+   [:sokka/snoozed (cond-> nil snooze-time (assoc :snooze-time snooze-time))]))
 
 (defn- wrap-ex
   "ring style wrapper that accepts `processor-fn` as an argument and
   returns a function with the same signature as `processor-fn`,
   catches any exceptions thrown and returns a `:sokkka/failed` event."
   [pfn]
-  (fn [task]
+  (fn [{:keys [task-id] :as task}]
     (try
       (let [[event-name _ :as ret] (pfn task)]
         (if (#{:sokka/completed :sokka/snoozed :sokka/failed} event-name)
           ret
           (do
-            (log/errorf "processing function returned invalid response: %s, %s"
-              (:task-id task)
-              ret)
+            (mu/log ::pfn-invalid-response {:task-id task-id :pfn-response ret})
             [:sokka/failed
              {:error-message "processing function returned invalid response"}])))
       (catch Throwable t
-        (log/errorf t "exception processing task with id %s" (:task-id task))
+        (mu/log ::pfn-failed {:task-id task-id :sokka/exception t})
         [:sokka/failed {:error-message (ex-message t)}]))))
 
 (defn- ->processor-fn
@@ -220,8 +238,7 @@
           (cond-> opts
             timeout-ms (assoc opts :timeout-ms timeout-ms))
           ctrl (new-control timeout-ms)]
-      (log/infof "worker[%s]: reserved task %s:" topic
-        (pr-str task-id))
+      (mu/log :sokka/worker-reserved-task {:task-id task-id :topic topic :pid pid})
       [ctrl (execute! opts ctrl task)])))
 
 (defn- cleanup-leased-tasks!
@@ -271,57 +288,62 @@
         close-chan  (async/chan 1)
         p           (promise)
         proc        (future
-                      (try
-                        (loop [sleeper-fn nil
-                               last-cleanup-time-ms 0]
+                      (mu/trace ::worker
+                        {:pairs {:pid pid :topic topic}}
+                        (try
+                          (loop [sleeper-fn nil
+                                 last-cleanup-time-ms 0]
 
-                          (when sleeper-fn
-                            (sleeper-fn))
+                            (when sleeper-fn
+                              (sleeper-fn))
 
-                          (when-not (.closed? close-chan)
-                            (let [[ctrl ftr :as reserved] (reserve-and-execute! opts)
-                                  ;; this is the best opportunity to
-                                  ;; run cleanup (if
-                                  ;; max-poll-interval-ms has passed
-                                  ;; since last cleanup of-course),
-                                  ;; just before blocking on
-                                  ;; completion of the task that may
-                                  ;; have been reserved
-                                  last-cleanup-time-ms'
-                                  (cleanup-leased-tasks! opts last-cleanup-time-ms)]
-                              (if reserved
-                                (do
-                                  (try
-                                    (deref ftr (+ (:timeout-ms opts) 300)
-                                      :timed-out)
-                                    (catch Throwable t
-                                      (log/warnf t "worker[%s]: error waiting for task to complete"
-                                        topic)
-                                      (abort! ctrl))
-                                    (finally
-                                      (cleanup! ctrl)))
+                            (mu/log ::heartbeat {})
+
+                            (when-not (.closed? close-chan)
+                              (let [[ctrl ftr :as reserved] (reserve-and-execute! opts)
+                                    ;; this is the best opportunity to
+                                    ;; run cleanup (if
+                                    ;; max-poll-interval-ms has passed
+                                    ;; since last cleanup of-course),
+                                    ;; just before blocking on
+                                    ;; completion of the task that may
+                                    ;; have been reserved
+                                    last-cleanup-time-ms'
+                                    (cleanup-leased-tasks! opts last-cleanup-time-ms)]
+                                (if reserved
+                                  (do
+                                    (try
+                                      (deref ftr (+ (:timeout-ms opts) 300)
+                                        :timed-out)
+                                      (catch Throwable t
+                                        (mu/log ::worker-task-failed
+                                          {:sokka/exception t})
+                                        (abort! ctrl))
+                                      (finally
+                                        (cleanup! ctrl)))
+
+                                    (when-not (.closed? close-chan)
+                                      (recur nil last-cleanup-time-ms')))
 
                                   (when-not (.closed? close-chan)
-                                    (recur nil last-cleanup-time-ms')))
+                                    (recur
+                                      (or sleeper-fn
+                                        (sleeper
+                                          :random-exp-backoff
+                                          :base 300
+                                          :+/- 0.5
+                                          :max (:max-poll-interval-ms opts)))
+                                      last-cleanup-time-ms))))))
 
-                                (when-not (.closed? close-chan)
-                                  (recur
-                                    (or sleeper-fn
-                                      (sleeper
-                                        :random-exp-backoff
-                                        :base 300
-                                        :+/- 0.5
-                                        :max (:max-poll-interval-ms opts)))
-                                    last-cleanup-time-ms))))))
+                          (mu/log ::worker-stopped {})
 
-                        (log/infof "Exiting worker :%s " pid)
+                          (catch Throwable t
+                            (mu/log ::worker-failed
+                              {:sokka/exception t})
+                            (throw t))
 
-                        (catch Throwable t
-                          (log/warnf t "Error in worker %s" pid)
-                          (throw t))
-
-                        (finally
-                          (deliver p true))))]
+                          (finally
+                            (deliver p true)))))]
 
     (fn []
       (async/close! close-chan)

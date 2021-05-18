@@ -3,10 +3,13 @@
             [verbo.sokka.ctrl :as ctrl]
             [verbo.sokka.utils :as u]
             [verbo.sokka.task :as task]
+            [verbo.sokka.test-helpers :as h]
             [verbo.sokka.impl.dynamodb-task :as dyn-task]
             [midje.sweet :refer :all]
             [clojure.core.async :as async]
             [clojure.tools.logging :as log]))
+
+(h/start-mulog-publisher {:type :console})
 
 (facts "about monitor!"
   (fact "handles close properly"

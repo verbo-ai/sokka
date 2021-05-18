@@ -1,7 +1,11 @@
 (ns verbo.sokka.test-helpers
   (:require [midje.sweet :as midje]
             [midje.checking.core :as checking]
-            [schema.core :as schema]))
+            [schema.core :as schema]
+            [com.brunobonacci.mulog :as mu]))
+
+(def start-mulog-publisher
+  (memoize (fn [cfg] (mu/start-publisher! cfg))))
 
 (defn error=
   ([t]

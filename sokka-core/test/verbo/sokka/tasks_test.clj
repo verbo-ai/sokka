@@ -9,6 +9,8 @@
             [verbo.sokka.impl.dynamodb-task :as dyn-task]
             [verbo.sokka.task :as task]))
 
+(h/start-mulog-publisher {:type :console})
+
 (defn new-task
   ([] (new-task (u/rand-id) (u/rand-id)))
 

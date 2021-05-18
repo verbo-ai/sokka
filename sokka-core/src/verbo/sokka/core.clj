@@ -30,13 +30,18 @@ Usage:
   [taskq task-group-id]
   (task/tasks taskq task-group-id))
 
-
 (defn list-tasks
   "List all tasks for a given `topic`."
   [taskq {:keys [from to topic sub-topic] :as filters} {:keys [limit] :as cursor}]
   (task/list-tasks taskq filters cursor))
 
 (defalias worker wrk/worker)
+
+(defalias ok wrk/ok)
+
+(defalias failed wrk/failed)
+
+(defalias snoozed wrk/snoozed)
 
 (defmulti taskq (fn [{:keys [type]}] type))
 

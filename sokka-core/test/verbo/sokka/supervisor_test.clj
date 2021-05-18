@@ -4,7 +4,10 @@
             [verbo.sokka.impl.dynamodb-task :as dyn-task]
             [verbo.sokka.utils :as u]
             [clojure.tools.logging :as log]
-            [verbo.sokka.task :as task]))
+            [verbo.sokka.task :as task]
+            [verbo.sokka.test-helpers :as h]))
+
+(h/start-mulog-publisher {:type :console})
 
 (defn new-task
   ([] (new-task (u/rand-id) (u/rand-id)))

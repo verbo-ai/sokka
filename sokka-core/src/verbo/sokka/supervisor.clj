@@ -23,12 +23,12 @@
         :on-error
         :max-retries 3
         :log-level :debug
-        :tracking :disabled
+        :tracking :enabled
         :log-stacktrace true
         :retryable-error? (fn [e] (some-> e ex-data :type (= :throttling-exception)))
         :retry-delay [:random-exp-backoff :base 500 :+/- 0.50])
     :on-error
-    :tracking :disabled
+    :tracking :enabled
     :log-level :debug
     :default nil)
   (dissoc a task-id))
