@@ -1,6 +1,5 @@
-(ns ^{:author "Sathya Vittal (@sathyavijayan)"
-      :doc "Protocols and constants to implement a task queue."}
-    verbo.sokka.task)
+(ns verbo.sokka.task
+  "Protocols and constants to implement a task queue.")
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                                                                            ;;
@@ -74,8 +73,9 @@
 
 
 (defprotocol LeaseSupervision
-  "Protocol for backends (usually stores that dont support locks) that
-  require special supervison of leased tasks to prevent time skew
-  issues."
+  "Protocol for backends (usually stores that dont support db level
+  locks) that require special supervision of leased tasks to prevent
+  issues caused by clock skew."
+
   (list-leased-tasks [this topic cursor]
     "List all running / snoozed tasks"))

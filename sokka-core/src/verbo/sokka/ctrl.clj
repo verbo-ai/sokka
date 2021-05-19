@@ -1,4 +1,7 @@
 (ns verbo.sokka.ctrl
+  "protocol and a default implementation of a `control` that enables
+  multiple threads to co-ordinate life cycle events, like
+  termination (close), kill (abort) and timeout."
   (:require [clojure.core.async :as async]
             [clojure.pprint :as pp])
   (:refer-clojure :exclude [deref]))

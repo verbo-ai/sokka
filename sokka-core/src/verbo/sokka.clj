@@ -1,12 +1,4 @@
-(ns ^{:author "Sathya Vittal (@sathyavijayan)"
-      :doc "sokka - Task management and async utilities for Clojure.
-
-Usage:
-```clojure
-;; create
-```
-
-"} verbo.sokka.core
+(ns verbo.sokka
   (:require [verbo.sokka.utils :refer [defalias]]
             [verbo.sokka.worker :as wrk]
             [verbo.sokka.task :as task]
