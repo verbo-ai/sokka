@@ -102,7 +102,6 @@
    ;; takes and how big is the payload you need to
    ;; provide a `:metrics-prefix` value
    ;; :metrics-prefix ["kv" "binary"]
-
    })
 
 (def ->compressor
@@ -113,7 +112,6 @@
      :lz4hc   compression/lz4hc-compressor
      :none    nil
      :default nil))
-
 
 (defn- ->nippy-config
   [config]

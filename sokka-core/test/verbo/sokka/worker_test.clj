@@ -7,7 +7,8 @@
             [verbo.sokka.impl.dynamodb-task :as dyn-task]
             [midje.sweet :refer :all]
             [clojure.core.async :as async]
-            [clojure.tools.logging :as log]))
+            [clojure.tools.logging :as log])
+  (:import [java.util.concurrent ExecutionException CancellationException]))
 
 (h/start-mulog-publisher {:type :console})
 
@@ -95,7 +96,7 @@
           ftr (sut/execute!* ctrl #(throw (ex-info "kaboom!" {})))]
       (try
         (fact "future is interrupted"
-          (deref ftr 600 :didnt-complete) => (throws java.util.concurrent.ExecutionException))
+          (deref ftr 600 :didnt-complete) => (throws Exception))
         (fact "ctrl is aborted"
           (.closed? (:abort-chan ctrl)) => true)
         (finally
@@ -108,7 +109,7 @@
       (ctrl/abort! ctrl)
       (try
         (fact "future is interrupted"
-          (deref ftr 600 :didnt-complete) => (throws java.util.concurrent.CancellationException))
+          (deref ftr 600 :didnt-complete) => (throws Exception))
         (finally
           (ctrl/cleanup! ctrl)))))
 
@@ -119,7 +120,7 @@
       (ctrl/close! ctrl)
       (try
         (fact "future is interrupted"
-          (deref ftr 600 :didnt-complete) => (throws java.util.concurrent.CancellationException))
+          (deref ftr 600 :didnt-complete) => (throws Exception))
         (finally
           (ctrl/cleanup! ctrl))))))
 

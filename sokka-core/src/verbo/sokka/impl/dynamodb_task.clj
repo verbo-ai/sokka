@@ -24,7 +24,7 @@
   {;; the aws region's endpoint to contact
    :cognitect-aws/client {:region "eu-west-1"}
    ;; the name of the table
-   :tasks-table "sc-tasks-v2"
+   :tasks-table "sokka-tasks"
 
    ;; the initial read and write capacity
    ;; for the table and indices
@@ -63,6 +63,13 @@
                 :else {:S (name v)})]))
     (into {})))
 
+(defn- dyn-exception=
+  [e pattern]
+  (some->> e
+    ex-data
+    :__type
+    (re-matches pattern)))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                                                                            ;;
 ;;                  ---==| C R E A T E   T A B L E S |==----                  ;;
@@ -91,37 +98,51 @@
               :BillingMode "PAY_PER_REQUEST"
               ;; indexes
               :GlobalSecondaryIndexes
-              [(cond-> {:IndexName task-group-index
+              [;; task-group-index - efficiently query all tasks for
+               ;; that have the same task-group-id. task-group-id is
+               ;; expected to have better distribution as we expect to
+               ;; see only a few tasks per group.
+               (cond-> {:IndexName task-group-index
                         :KeySchema
-                        [{:AttributeName "task-group-id"
-                          :KeyType "HASH"}
-                         {:AttributeName "task-id"
-                          :KeyType "RANGE"}]
+                        [{:AttributeName "task-group-id" :KeyType "HASH"}
+                         {:AttributeName "task-id" :KeyType "RANGE"}]
                         :Projection {:ProjectionType "ALL"}}
                  throughput-provisioned?
                  (assoc :ProvisionedThroughPut
                    {:ReadCapacityUnits read-capacity-units
                     :WriteCapacityUnits write-capacity-units}))
 
-               ;; reservation-index
+               ;; reservation-index - efficiently query tasks by
+               ;; status. In-order to achieve maximum distribution of
+               ;; the partition key, the `__topic-key` is constructed
+               ;; by appending the topic name with the last updated
+               ;; timestamp for all tasks that have completed
+               ;; (successfully or not). The assumption made is that
+               ;; the total number of new and running tasks will be
+               ;; small enough to not cause hot partitions.
                (cond-> {:IndexName reservation-index
                         :KeySchema
-                        [{:AttributeName "__topic-key"
-                          :KeyType "HASH"}
-                         {:AttributeName "__reserv-key"
-                          :KeyType "RANGE"}]
+                        [{:AttributeName "__topic-key" :KeyType "HASH"}
+                         {:AttributeName "__reserv-key" :KeyType "RANGE"}]
                         :Projection {:ProjectionType "ALL"}}
                  throughput-provisioned?
                  (assoc :ProvisionedThroughPut
                    {:ReadCapacityUnits read-capacity-units
                     :WriteCapacityUnits write-capacity-units}))
 
+               ;; task-scan-index - efficiently query tasks, by topic,
+               ;; and optionally filter by subtopic and status.  To
+               ;; achieve maximum distribution, `__topic-scan-hkey` is
+               ;; constructed by combining the topic name and
+               ;; 'YYYY.WW' where WW is the week number of the last
+               ;; updated date. The range key `__topic-scan-rkey` is a
+               ;; combination of the subtopic, status flags and the
+               ;; last updated timestamp. In this implementation
+               ;; `sub-topic` is defaulted to `default`.
                (cond-> {:IndexName task-scan-index
                         :KeySchema
-                        [{:AttributeName "__topic-scan-hkey"
-                          :KeyType "HASH"}
-                         {:AttributeName "__topic-scan-rkey"
-                          :KeyType "RANGE"}]
+                        [{:AttributeName "__topic-scan-hkey" :KeyType "HASH"}
+                         {:AttributeName "__topic-scan-rkey" :KeyType "RANGE"}]
                         :Projection {:ProjectionType "ALL"}}
                  throughput-provisioned?
                  (assoc :ProvisionedThroughPut
@@ -143,6 +164,7 @@
 ;;                                                                            ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (defn- parse-task*
+  "parse dynamodb `Item` to sokka task"
   [task]
   (some-> task
     ddb-rec->m
@@ -150,6 +172,7 @@
     (update :data (comp u/deserialize u/base64->bytes))))
 
 (defn- ->returnable-item
+  "removes internal/synthetic attributes from the task record"
   [task]
   (dissoc task
     :__topic-key
@@ -171,6 +194,7 @@
     :else                  (status-flags* :starting)))
 
 (defn- ->topic-key
+  "construct `__topic-key` from the supplied topic and status"
   [topic status]
   (format "%s%020d"
     topic
@@ -179,6 +203,7 @@
       0)))
 
 (defn- ->topic-scan-hkey*
+  "construct `__topic-scan-hkey` from the given timestamp and topic"
   [now topic]
   (format "%s:%s:%02d"
     topic
@@ -186,9 +211,9 @@
     (t/week-number-of-year now)))
 
 (defn- ->topic-scan-hkey
+  "construct `__topic-scan-hkey` for the given topic with current time"
   [topic]
-  (->topic-scan-hkey* (tc/from-long (u/now))
-    topic))
+  (->topic-scan-hkey* (tc/from-long (u/now)) topic))
 
 (defn- ->topic-scan-rkey*
   ([sub-topic status-flag]
@@ -203,10 +228,10 @@
      now)))
 
 (defn- ->topic-scan-rkey
+  "construct `__topic-scan-rkey` for the given sub-topic and status and
+  current time"
   [sub-topic status-flag]
-  (->topic-scan-rkey* (u/now)
-    sub-topic
-    status-flag))
+  (->topic-scan-rkey* (u/now) sub-topic status-flag))
 
 (defn- inject-derived-attributes
   "Ensure that synthetic attributes are always present with the correct value"
@@ -476,10 +501,7 @@
         (safe-put-item this task-def)
         task-def)
       (catch Exception e
-        (if (some->> e
-              ex-data
-              :__type
-              (re-matches #"com.amazonaws.dynamodb.*?ConditionalCheckFailedException"))
+        (if (dyn-exception= e #"com.amazonaws.dynamodb.*?ConditionalCheckFailedException")
           (do (log/debug e "create-task! failed - task already exists")
               (throw (ex-info "Task already exists"
                        {:type :forbidden
@@ -569,17 +591,22 @@
   [f & args]
   (try
     (apply f args)
+
+    (catch clojure.lang.ExceptionInfo e
+      (throw e))
+
     (catch Exception e
-      (condp #(re-matches %1 %2) (-> e ex-data :__type (or "unknown"))
-        #"com.amazonaws.dynamodb.*?ProvisionedThroughputExceededException"
-        (throw (ex-info "Task already exists"
-                 {:type :forbidden
-                  :error :task-already-exists}))
+      (cond
+        (dyn-exception= e #"com.amazonaws.dynamodb.*?ProvisionedThroughputExceededException")
+        (throw (ex-info "Provisioned throughput exceeded"
+                 {:type :throttling-exception
+                  :error :provisioned-throughput-exceeded}))
 
-        #"com.amazonaws.dynamodb.*?ConditionalCheckFailedException"
-        nil
-
-        (throw e)))))
+        :else
+        (throw (ex-info "Unhandled Exception in Dynamodb TaskQ"
+                 {:type :internal-error
+                  :error :unhandled-exception
+                  :ex e}))))))
 
 (defrecord DynamoTaskQWrapper [dyn-taskq]
   TaskStore

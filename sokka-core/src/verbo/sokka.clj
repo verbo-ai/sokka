@@ -1,4 +1,5 @@
 (ns verbo.sokka
+  "Background task management library for Clojure."
   (:require [verbo.sokka.utils :refer [defalias]]
             [verbo.sokka.worker :as wrk]
             [verbo.sokka.task :as task]
