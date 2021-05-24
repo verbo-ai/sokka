@@ -6,8 +6,8 @@
             :url "http://www.apache.org/licenses/LICENSE-2.0"}
 
   :scm {:name "git"
-        :url "https://github.com/verbo-ai/sokka"
-        :branch "initial"}
+        :url "https://github.com/verbo-ai/sokka.git"
+        :dir ".."}
 
   :dependencies [[org.clojure/clojure "1.10.1"]
                  [prismatic/schema "1.1.12"]
