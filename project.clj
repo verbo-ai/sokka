@@ -16,6 +16,6 @@
   #_#_:dependencies #=(sokka-core-deps)
 
   :scm {:name "git"
-        :url "https://github.com/verbo-ai/sokka.git"}
+        :url "https://github.com/sathyavijayan/sokka.git"}
 
   :source-paths ["sokka-core/src"])
