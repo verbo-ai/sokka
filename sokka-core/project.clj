@@ -27,8 +27,6 @@
   ;; generating AOT jar alongside Clojure JAR
   :classifiers {:aot :aot-jar}
 
-  :plugins [[fundingcircle/lein-modules "0.3.12"]]
-
   :profiles {:aot-jar {:aot :all}
              :dev
              {:plugins [[lein-midje "3.1.1"]]
