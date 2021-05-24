@@ -1,8 +1,7 @@
 (ns verbo.sokka.utils
   (:require [taoensso.nippy :as nippy]
             [taoensso.nippy.compression :as compression])
-  (:import [org.apache.commons.codec DecoderException]
-           [java.util Arrays UUID Base64]
+  (:import [java.util Arrays UUID Base64]
            [java.nio ByteBuffer HeapByteBuffer]
            java.util.UUID
            [java.io DataInputStream]))

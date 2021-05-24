@@ -5,7 +5,8 @@
   :license {:name "Apache License 2.0"
             :url "http://www.apache.org/licenses/LICENSE-2.0"}
 
-  :scm {:name "git" :url "https://github.com/verbo-ai/sokka"}
+  :scm {:name "git"
+        :url "https://github.com/verbo-ai/sokka/tree/initial"}
 
   :source-paths ["sokka-core/src" ]
 
