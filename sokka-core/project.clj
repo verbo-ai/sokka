@@ -1,4 +1,4 @@
-(defproject net.clojars.sathyavijayan/sokka-core (-> "../version" slurp .trim)
+(defproject net.clojars.sathyavijayan/sokka (-> "../version" slurp .trim)
   :description "Task management and async utilities for Clojure"
   :url "https://github.com/verbo-ai/sokka"
 
@@ -26,6 +26,8 @@
 
   ;; generating AOT jar alongside Clojure JAR
   :classifiers {:aot :aot-jar}
+
+  :plugins [[fundingcircle/lein-modules "0.3.12"]]
 
   :profiles {:aot-jar {:aot :all}
              :dev
