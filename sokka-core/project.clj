@@ -1,4 +1,4 @@
-(defproject net.clojars.sathyavijayan/sokka (-> "../version" slurp .trim)
+(defproject ai.verbo/sokka (-> "../version" slurp .trim)
   :description "Task management and async utilities for Clojure"
   :url "https://github.com/verbo-ai/sokka"
 
