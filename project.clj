@@ -13,7 +13,7 @@
   :license {:name "Apache License 2.0"
             :url "http://www.apache.org/licenses/LICENSE-2.0"}
 
-  #_#_:dependencies #=(sokka-core-deps)
+  :dependencies #=(sokka-core-deps)
 
   :scm {:name "git"
         :url "https://github.com/sathyavijayan/sokka.git"}
