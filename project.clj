@@ -6,7 +6,7 @@
     (apply hash-map)
     :dependencies))
 
-(defproject net.clojars.sathyavijayan/sokka (-> "version" slurp .trim)
+(defproject ai.verbo/sokka (-> "version" slurp .trim)
   :description "Task management and async utilities for Clojure"
   :url "https://github.com/verbo-ai/sokka"
 
@@ -16,6 +16,6 @@
   :dependencies #=(sokka-core-deps)
 
   :scm {:name "git"
-        :url "https://github.com/sathyavijayan/sokka.git"}
+        :url "https://github.com/verbo-ai/sokka.git"}
 
   :source-paths ["sokka-core/src"])
