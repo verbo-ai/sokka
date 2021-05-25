@@ -1,38 +1,38 @@
 # sokka
 
-Task management and async utilities for Clojure(Script).
+Task management and async utilities for Clojure.
 
-The name 'sokka' is inspired by the fictional character in the animation series
-Avatar: The Last Airbender.
+`sokka` is the fictional character in the animation series **Avatar: The Last Airbender.**
 
 ![Sokka](https://upload.wikimedia.org/wikipedia/en/c/cc/Sokka.png)
 
+## Objectives
 
-🚧🚧  - This library is a WIP.
+sokka's main objective is to offer a light-weight background
+processing library for Clojure, by providing a simple implementation
+of `DurableQueue` and provide basic building blocks to run de-queued
+tasks asynchronously.
 
-## Installation
+`sokka` comes with a DynamoDB implementation out of the box, because
+it is the primary storage for the [verbo](https://verbo.ai)
+platform. However, it is possible to provide an alternative
+implementation by implementing the `Task` protocol.
 
 
-## Usage
+Main benefits include:
 
+- Simple to integrate - does not require a standalone server, just add
+  the library as a dependency to get started.
+- Simple, but powerful worker implementation to run tasks
+  asynchronously and in-process.
+- Command line tool to create, list and manage tasks (WIP)
+- A gorgeous Web UI to visualise and manage tasks.
 
-## Options
+## What's next
 
-
-## Examples
-
+- Improved task lifecycle - support retries and pause (hold task).
+- Provide higher level features for task lifecycle management using FSM.
 
 ## License
 
-Copyright © 2021 verbo.ai
-
-This program and the accompanying materials are made available under the
-terms of the Eclipse Public License 2.0 which is available at
-http://www.eclipse.org/legal/epl-2.0.
-
-This Source Code may also be made available under the following Secondary
-Licenses when the conditions for such availability set forth in the Eclipse
-Public License, v. 2.0 are satisfied: GNU General Public License as published by
-the Free Software Foundation, either version 2 of the License, or (at your
-option) any later version, with the GNU Classpath Exception which is available
-at https://www.gnu.org/software/classpath/license.html.
+Copyright © 2019-2021 verbo.ai - Distributed under the [Apache License v2.0](http://www.apache.org/licenses/LICENSE-2.0)
