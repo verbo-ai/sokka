@@ -1,4 +1,4 @@
-(ns verbo.sokka.ctrl
+(ns ^:no-doc verbo.sokka.ctrl
   "protocol and a default implementation of a `control` that enables
   multiple threads to co-ordinate life cycle events, like
   termination (close), kill (abort) and timeout."

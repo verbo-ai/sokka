@@ -1,5 +1,5 @@
 ;; credit - adopted from https://github.com/BrunoBonacci/1config/
-(ns verbo.sokka.aws
+(ns  ^:no-doc verbo.sokka.aws
   (:require
    [cognitect.aws.client.api  :as aws]
    [cognitect.aws.http.cognitect]

@@ -1,4 +1,4 @@
-(ns verbo.sokka.utils
+(ns ^:no-doc verbo.sokka.utils
   (:require [taoensso.nippy :as nippy]
             [taoensso.nippy.compression :as compression])
   (:import [java.util Arrays UUID Base64]

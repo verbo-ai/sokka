@@ -1,4 +1,4 @@
-(ns verbo.sokka.worker
+(ns ^:no-doc verbo.sokka.worker
   (:require [verbo.sokka.task :as task]
             [verbo.sokka.ctrl :refer :all]
             [clojure.tools.logging :as log]

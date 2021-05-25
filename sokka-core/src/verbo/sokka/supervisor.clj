@@ -1,11 +1,11 @@
-(ns verbo.sokka.supervisor
+(ns ^:no-doc verbo.sokka.supervisor
   "Monitors running and snoozed tasks and revokes the lease of tasks
   whose lease has expired. Locking implementations in distributed
   systems are prone to issues caused by clock skew. A process with
   skewed time can cause the active and valid lease held by other
   processes to be revoked. This can cause thrashing of tasks and
   results in the same task being attempted to run multiple times
-  wasting system resources and delaying sucessful task execution. This
+  wasting system resources and delaying successful task execution. This
   issue can be resolved by maintaining an in memory list of tasks with
   active lease and a projected expiry time based on the current time
   of the process/instance. If the task still has the same record
@@ -22,7 +22,7 @@
             [safely.core :refer [safely]]
             [clojure.tools.logging :as log]))
 
-(defn mark-task!
+(defn ^:no-doc mark-task!
   "'marks' the last seen record version and expiry time for the given
   task. `expiry` is computed by adding `lease-time-ms` to the current
   time for running tasks and `snooze-time` for snoozed tasks. If there
@@ -40,7 +40,7 @@
                  (+ (u/now) snooze-time)
                  (+ (u/now) lease-time-ms))})))
 
-(defn sweep-task!
+(defn ^:no-doc sweep-task!
   "Revoke lease of a given task, so it will be available for
   reservation. The `record-ver` of the task is passed to the update
   function to ensure that tasks which were updated concurrently
@@ -49,15 +49,15 @@
   record for the task is removed from the map `m`."
   [a taskq task-id record-ver]
   (safely
-      (safely
-          (task/revoke-lease! taskq task-id record-ver)
-        :on-error
-        :max-retries 3
-        :log-level :debug
-        :tracking :enabled
-        :log-stacktrace true
-        :retryable-error? (fn [e] (some-> e ex-data :type (= :throttling-exception)))
-        :retry-delay [:random-exp-backoff :base 500 :+/- 0.50])
+    (safely
+      (task/revoke-lease! taskq task-id record-ver)
+      :on-error
+      :max-retries 3
+      :log-level :debug
+      :tracking :enabled
+      :log-stacktrace true
+      :retryable-error? (fn [e] (some-> e ex-data :type (= :throttling-exception)))
+      :retry-delay [:random-exp-backoff :base 500 :+/- 0.50])
     :on-error
     :tracking :enabled
     :log-level :debug

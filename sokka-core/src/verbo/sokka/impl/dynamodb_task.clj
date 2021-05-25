@@ -1,4 +1,4 @@
-(ns verbo.sokka.impl.dynamodb-task
+(ns ^:no-doc verbo.sokka.impl.dynamodb-task
   (:require [clj-time.coerce :as tc]
             [clj-time.core :as t]
             [clj-time.periodic :as tp]
