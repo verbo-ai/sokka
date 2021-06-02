@@ -41,7 +41,7 @@
                                (deliver p :timed-out)
                                (async/close! abort-chan)
                                :aborted))))]
-    (reify Control
+    (reify
       clojure.lang.IDeref
       (deref [_] (clojure.core/deref p))
 
@@ -64,6 +64,6 @@
         nil)
 
       (live? [this]
-        (not (closed? monitor)))
+        (not (closed? m)))
 
       (monitor [this] m))))
