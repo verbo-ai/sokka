@@ -14,36 +14,34 @@
 
 (facts "about monitor!"
   (fact "handles close properly"
-    (let [ctrl (ctrl/new-control)]
+    (let [ctrl (ctrl/default-control (* 1 60 1000))]
       (try
-        (ctrl/monitor! ctrl)
         (ctrl/close! ctrl)
         (deref ctrl 300 :didnt-complete) => :closed
         (finally
           (ctrl/cleanup! ctrl)))))
 
   (fact "handles abort properly"
-    (let [ctrl (ctrl/new-control)]
+    (let [ctrl (ctrl/default-control (* 1 60 1000))]
       (try
-        (ctrl/monitor! ctrl)
         (ctrl/abort! ctrl)
         (deref ctrl 300 :didnt-complete) => :aborted
         (finally
           (ctrl/cleanup! ctrl)))))
 
   (fact "aborts ctrl on timeout"
-    (let [ctrl (ctrl/new-control 1)]
+    (let [ctrl (ctrl/default-control 1)]
       (try
-        (ctrl/monitor! ctrl)
         (deref ctrl 100 :didnt-complete) => :timed-out
-        (.closed? (:abort-chan ctrl)) => true
+        @ctrl => :timed-out
         (finally
           (ctrl/cleanup! ctrl))))))
+
 
 (facts "about keepalive!*"
   (facts "calls keepalive-fn every keepalive-ms times"
     (let [heartbeats (atom 0)
-          ctrl (ctrl/new-control)
+          ctrl  (ctrl/default-control (* 1 60 1000))
           p    (sut/keepalive!* ctrl 100 #(swap! heartbeats inc))]
       (async/go
         (async/<! (async/timeout 310))
@@ -57,7 +55,7 @@
           (ctrl/cleanup! ctrl)))))
 
   (fact "shuts down cleanly when aborted"
-    (let [ctrl (ctrl/new-control)
+    (let [ctrl (ctrl/default-control (* 1 60 1000))
           p    (sut/keepalive!* ctrl 100 (constantly :no-op))]
       (async/go (ctrl/abort! ctrl))
       (try
@@ -67,20 +65,21 @@
           (ctrl/cleanup! ctrl)))))
 
   (fact "aborts ctrl when there is an exception"
-    (let [ctrl (ctrl/new-control)
+    (let [ctrl (ctrl/default-control (* 1 60 1000))
           p    (sut/keepalive!* ctrl 100 #(throw (ex-info "kaboom!" {})))]
       (try
         (fact "completes gracefully"
           (deref p 600 :didnt-complete) => :failed)
         (fact "aborts ctrl"
-          (.closed? (:abort-chan ctrl)) => true)
+          @ctrl => :aborted)
         (finally
           (ctrl/cleanup! ctrl))))))
+
 
 (facts "about execute!"
   (facts "executes pfn in a separate thread and stops gracefully"
     (let [out  (atom nil)
-          ctrl (ctrl/new-control)
+          ctrl (ctrl/default-control (* 1 60 1000))
           ftr (sut/execute!* ctrl #(reset! out "Hello!"))]
       (try
         (fact "completes gracefully"
@@ -92,19 +91,19 @@
 
   (facts "when pfn fails, the ctrl is aborted"
     (let [out  (atom nil)
-          ctrl (ctrl/new-control)
-          ftr (sut/execute!* ctrl #(throw (ex-info "kaboom!" {})))]
+          ctrl (ctrl/default-control (* 1 60 1000))
+          ftr (sut/execute!* ctrl  #(throw (ex-info "kaboom!" {})))]
       (try
         (fact "future is interrupted"
           (deref ftr 600 :didnt-complete) => (throws Exception))
         (fact "ctrl is aborted"
-          (.closed? (:abort-chan ctrl)) => true)
+          @ctrl => :aborted)
         (finally
           (ctrl/cleanup! ctrl)))))
 
   (facts "when ctrl is aborted, future is cancelled"
     (let [out  (atom nil)
-          ctrl (ctrl/new-control)
+          ctrl (ctrl/default-control (* 1 60 1000))
           ftr (sut/execute!* ctrl #(Thread/sleep (* 1 60 1000)))]
       (ctrl/abort! ctrl)
       (try
@@ -115,7 +114,7 @@
 
   (facts "when ctrl is closed, future is cancelled"
     (let [out  (atom nil)
-          ctrl (ctrl/new-control)
+          ctrl (ctrl/default-control (* 1 60 1000))
           ftr (sut/execute!* ctrl #(Thread/sleep (* 1 60 1000)))]
       (ctrl/close! ctrl)
       (try
@@ -161,13 +160,13 @@
           (deref (stop-fn) 600 :didnt-complete) => true))
 
       (facts "aborts current running task when closed"
-        (let [test-ctrl (ctrl/new-control)
+        (let [test-ctrl (ctrl/default-control (* 1 60 1000))
               topic (u/rand-id)
               pid (u/rand-id)
               _ (task/create-task! dyn-taskq
                   {:topic topic
                    :data :noop})]
-          (with-redefs [ctrl/new-control (constantly test-ctrl)]
+          (with-redefs [ctrl/default-control (constantly test-ctrl)]
             (let [stop-fn (sut/worker {:taskq dyn-taskq
                                        :lease-time-ms (:lease-time @test-config)
                                        :topic topic
@@ -184,7 +183,7 @@
                 (deref (stop-fn) 600 :didnt-complete)
 
                 (fact "running task is aborted"
-                  (.closed? (:abort-chan test-ctrl)) => true)
+                  @test-ctrl => :aborted)
 
                 (finally
                   (stop-fn)

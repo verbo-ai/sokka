@@ -7,7 +7,8 @@
             [verbo.sokka.supervisor :as supervisor]
             [verbo.sokka.utils :as u]
             [verbo.sokka.ctrl :as ctrl]
-            [com.brunobonacci.mulog :as mu]))
+            [com.brunobonacci.mulog :as mu]
+            [clojure.core.async.impl.protocols :refer [closed?]]))
 
 (def ^:const DEFAULT-TASK-KEEPALIVE-TIME (* 3 60 1000))
 
@@ -122,16 +123,16 @@
   signals termination by delivering value to a promise and does
   housekeeping when things go wrong. Returns a record that implements
   `TaskCtrl`."
-  [{:keys [abort-chan close-chan] :as ctrl} keepalive-ms keepalive-fn]
+  [ctrl  keepalive-ms keepalive-fn]
   (let [p (promise)
         timeout-ms (or keepalive-ms DEFAULT-TASK-KEEPALIVE-TIME)]
     (async/thread
       (try
         (loop [keepalive-chan (async/timeout timeout-ms)]
-          (let [[_ c] (async/alts!! [keepalive-chan abort-chan close-chan])]
+          (let [monitor (monitor ctrl)
+                [v c] (async/alts!! [keepalive-chan monitor])]
             (condp = c
-              close-chan   (deliver p :closed)
-              abort-chan   (deliver p :aborted)
+              monitor  (deliver p v)
               keepalive-chan (do
                                (keepalive-fn)
                                (recur (async/timeout timeout-ms))))))
@@ -149,7 +150,7 @@
 ;;                                                                            ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (defn execute!*
-  [{:keys [abort-chan close-chan] :as ctrl} pfn]
+  [ctrl pfn]
   (let [out-chan (async/chan 1)
         ftr  (future
                (try
@@ -160,7 +161,7 @@
                    (throw t))))]
     (async/go
       (try
-        (let [_ (async/alts! [abort-chan close-chan])]
+        (let [_ (async/<! (monitor ctrl))]
           (.cancel ftr true))
         (catch Throwable e
           (abort! ctrl)
@@ -217,18 +218,14 @@
 
 (defn execute!
   [{:keys [taskq topic pid pfn keepalive-ms timeout-ms]} ctrl task]
-  (ctrl/monitor! ctrl)
-
   (keepalive!* ctrl keepalive-ms
     #(keepalive-fn! taskq (:task-id task) pid))
 
-  (execute!*
-    ctrl
+  (execute!* ctrl
     (partial (->> pfn
          wrap-ex
          (->processor-fn taskq pid))
       task)))
-
 
 (defn- reserve-and-execute!
   [{:keys [taskq topic pid pfn keepalive-ms timeout-ms max-poll-interval-ms] :as opts}]
@@ -237,7 +234,7 @@
     (let [{:keys [timeout-ms] :as opts}
           (cond-> opts
             timeout-ms (assoc opts :timeout-ms timeout-ms))
-          ctrl (new-control timeout-ms)]
+          ctrl (default-control timeout-ms)]
       (mu/log :sokka/worker-reserved-task {:task-id task-id :topic topic :pid pid})
       [ctrl (execute! opts ctrl task)])))
 
@@ -299,7 +296,7 @@
 
                             (mu/log ::heartbeat {})
 
-                            (when-not (.closed? close-chan)
+                            (when-not (closed? close-chan)
                               (let [[ctrl ftr :as reserved] (reserve-and-execute! opts)
                                     ;; this is the best opportunity to
                                     ;; run cleanup (if
@@ -322,10 +319,10 @@
                                       (finally
                                         (cleanup! ctrl)))
 
-                                    (when-not (.closed? close-chan)
+                                    (when-not (closed? close-chan)
                                       (recur nil last-cleanup-time-ms')))
 
-                                  (when-not (.closed? close-chan)
+                                  (when-not (closed? close-chan)
                                     (recur
                                       (or sleeper-fn
                                         (sleeper

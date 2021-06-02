@@ -10,6 +10,8 @@
 (defn create-task!
   "Create and returns a new task."
   [taskq task]
+  ;; TODO: validate the task before creation.
+  (assert (:topic task) "Topic must be set.")
   (task/create-task! taskq task))
 
 (defn task
