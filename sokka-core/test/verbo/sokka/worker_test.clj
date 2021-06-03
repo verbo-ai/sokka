@@ -14,74 +14,74 @@
 
 (facts "about monitor!"
   (fact "handles close properly"
-    (let [ctrl (ctrl/new-control)]
+    (let [ctrl (ctrl/default-control (* 1 60 1000))]
       (try
-        (ctrl/monitor! ctrl)
         (ctrl/close! ctrl)
-        (deref ctrl 300 :didnt-complete) => :closed
+        (deref ctrl 300 :didnt-complete) => {:status :closed}
         (finally
           (ctrl/cleanup! ctrl)))))
 
   (fact "handles abort properly"
-    (let [ctrl (ctrl/new-control)]
+    (let [ctrl (ctrl/default-control (* 1 60 1000))]
       (try
-        (ctrl/monitor! ctrl)
         (ctrl/abort! ctrl)
-        (deref ctrl 300 :didnt-complete) => :aborted
+        (deref ctrl 300 :didnt-complete) => (contains {:status :aborted})
         (finally
           (ctrl/cleanup! ctrl)))))
 
   (fact "aborts ctrl on timeout"
-    (let [ctrl (ctrl/new-control 1)]
+    (let [ctrl (ctrl/default-control 1)]
       (try
-        (ctrl/monitor! ctrl)
-        (deref ctrl 100 :didnt-complete) => :timed-out
-        (.closed? (:abort-chan ctrl)) => true
+        (deref ctrl 100 :didnt-complete) =>  {:status :aborted :err-data {:reason :timed-out}}
         (finally
           (ctrl/cleanup! ctrl))))))
+
+(def keepalive!* #'sut/keepalive!*)
 
 (facts "about keepalive!*"
   (facts "calls keepalive-fn every keepalive-ms times"
     (let [heartbeats (atom 0)
-          ctrl (ctrl/new-control)
-          p    (sut/keepalive!* ctrl 100 #(swap! heartbeats inc))]
+          ctrl  (ctrl/default-control (* 1 60 1000))
+          p    (keepalive!* ctrl 100 #(swap! heartbeats inc))]
       (async/go
         (async/<! (async/timeout 310))
         (ctrl/close! ctrl))
       (try
         (fact "completes gracefully"
-          (deref p 600 :didnt-complete) => :closed)
+          (deref p 600 :didnt-complete) => (contains {:status :closed}))
         (fact "heartbeats are received"
           @heartbeats => 3)
         (finally
           (ctrl/cleanup! ctrl)))))
 
   (fact "shuts down cleanly when aborted"
-    (let [ctrl (ctrl/new-control)
-          p    (sut/keepalive!* ctrl 100 (constantly :no-op))]
+    (let [ctrl (ctrl/default-control (* 1 60 1000))
+          p    (keepalive!* ctrl 100 (constantly :no-op))]
       (async/go (ctrl/abort! ctrl))
       (try
         (fact "completes gracefully"
-          (deref p 600 :didnt-complete) => :aborted)
+          (deref p 600 :didnt-complete) => (contains {:status :aborted}))
         (finally
           (ctrl/cleanup! ctrl)))))
 
   (fact "aborts ctrl when there is an exception"
-    (let [ctrl (ctrl/new-control)
-          p    (sut/keepalive!* ctrl 100 #(throw (ex-info "kaboom!" {})))]
+    (let [ctrl (ctrl/default-control (* 1 60 1000))
+          p    (keepalive!* ctrl 100 #(throw (ex-info "kaboom!" {})))]
       (try
         (fact "completes gracefully"
           (deref p 600 :didnt-complete) => :failed)
         (fact "aborts ctrl"
-          (.closed? (:abort-chan ctrl)) => true)
+          @ctrl => (contains {:status :aborted}))
         (finally
           (ctrl/cleanup! ctrl))))))
 
-(facts "about execute!"
+(def execute!* #'sut/execute!*)
+
+(facts "about execute!*"
   (facts "executes pfn in a separate thread and stops gracefully"
     (let [out  (atom nil)
-          ctrl (ctrl/new-control)
-          ftr (sut/execute!* ctrl #(reset! out "Hello!"))]
+          ctrl (ctrl/default-control (* 1 60 1000))
+          ftr (execute!* ctrl #(reset! out "Hello!"))]
       (try
         (fact "completes gracefully"
           (deref ftr 600 :didnt-complete) => :closed)
@@ -92,20 +92,20 @@
 
   (facts "when pfn fails, the ctrl is aborted"
     (let [out  (atom nil)
-          ctrl (ctrl/new-control)
-          ftr (sut/execute!* ctrl #(throw (ex-info "kaboom!" {})))]
+          ctrl (ctrl/default-control (* 1 60 1000))
+          ftr (execute!* ctrl  #(throw (ex-info "kaboom!" {})))]
       (try
         (fact "future is interrupted"
           (deref ftr 600 :didnt-complete) => (throws Exception))
         (fact "ctrl is aborted"
-          (.closed? (:abort-chan ctrl)) => true)
+          @ctrl => (contains {:status :aborted}))
         (finally
           (ctrl/cleanup! ctrl)))))
 
   (facts "when ctrl is aborted, future is cancelled"
     (let [out  (atom nil)
-          ctrl (ctrl/new-control)
-          ftr (sut/execute!* ctrl #(Thread/sleep (* 1 60 1000)))]
+          ctrl (ctrl/default-control (* 1 60 1000))
+          ftr (execute!* ctrl #(Thread/sleep (* 1 60 1000)))]
       (ctrl/abort! ctrl)
       (try
         (fact "future is interrupted"
@@ -115,8 +115,8 @@
 
   (facts "when ctrl is closed, future is cancelled"
     (let [out  (atom nil)
-          ctrl (ctrl/new-control)
-          ftr (sut/execute!* ctrl #(Thread/sleep (* 1 60 1000)))]
+          ctrl (ctrl/default-control (* 1 60 1000))
+          ftr (execute!* ctrl #(Thread/sleep (* 1 60 1000)))]
       (ctrl/close! ctrl)
       (try
         (fact "future is interrupted"
@@ -161,22 +161,22 @@
           (deref (stop-fn) 600 :didnt-complete) => true))
 
       (facts "aborts current running task when closed"
-        (let [test-ctrl (ctrl/new-control)
+        (let [test-ctrl (ctrl/default-control (* 1 60 1000))
               topic (u/rand-id)
               pid (u/rand-id)
               _ (task/create-task! dyn-taskq
                   {:topic topic
                    :data :noop})]
-          (with-redefs [ctrl/new-control (constantly test-ctrl)]
+          (with-redefs [ctrl/default-control (constantly test-ctrl)]
             (let [stop-fn (sut/worker {:taskq dyn-taskq
                                        :lease-time-ms (:lease-time @test-config)
                                        :topic topic
                                        :pid pid
-                                       :pfn (fn [_]
-                                              (Thread/sleep (* 6 1000)))})]
+                                       :executor-fn (sut/default-executor
+                                                      (fn [_]
+                                                        (Thread/sleep (* 6 1000))))})]
               (try
                 ;; wait for task to be picked up
-
                 ;; TODO: more non-deterministic tests, cant think of a
                 ;; better option at this point, something to fix later
                 (deref (promise) 1000 :timeout)
@@ -184,7 +184,7 @@
                 (deref (stop-fn) 600 :didnt-complete)
 
                 (fact "running task is aborted"
-                  (.closed? (:abort-chan test-ctrl)) => true)
+                  @test-ctrl)
 
                 (finally
                   (stop-fn)
@@ -217,7 +217,7 @@
                        :lease-time-ms (:lease-time @test-config)
                        :topic topic
                        :pid pid
-                       :pfn test-task-handler})]
+                       :executor-fn (sut/default-executor test-task-handler)})]
         ;; wait for task to be picked up
         ;; TODO: more non-deterministic tests, cant think of a
         ;; better option at this point, something to fix later
@@ -265,7 +265,7 @@
                                  :lease-time-ms (:lease-time @test-config)
                                  :topic topic
                                  :pid pid
-                                 :pfn test-task-handler})]
+                                 :executor-fn (sut/default-executor test-task-handler)})]
 
         ;; wait for task to be picked up
         ;; TODO: more non-deterministic tests, cant think of a
