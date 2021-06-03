@@ -117,77 +117,7 @@
 ;;                    ----==| K E E P   A L I V E |==----                     ;;
 ;;                                                                            ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(defn keepalive!*
-  "Spawns a thread that monitors the async pipeline, does regular
-  keepalive pings every `keepalive-ms` by calling the `keepalive-fn`,
-  signals termination by delivering value to a promise and does
-  housekeeping when things go wrong. Returns a record that implements
-  `TaskCtrl`."
-  [ctrl  keepalive-ms keepalive-fn]
-  (let [p (promise)
-        timeout-ms (or keepalive-ms DEFAULT-TASK-KEEPALIVE-TIME)]
-    (async/thread
-      (try
-        (loop [keepalive-chan (async/timeout timeout-ms)]
-          (let [monitor (monitor ctrl)
-                [v c] (async/alts!! [keepalive-chan monitor])]
-            (condp = c
-              monitor  (deliver p v)
-              keepalive-chan (do
-                               (keepalive-fn)
-                               (recur (async/timeout timeout-ms))))))
-
-        (catch Throwable e
-          (abort! ctrl)
-          (deliver p :failed)
-          (throw e))))
-
-    p))
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;                                                                            ;;
-;;                      ----==| E X E C U T O R |==----                       ;;
-;;                                                                            ;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(defn execute!*
-  [ctrl pfn]
-  (let [out-chan (async/chan 1)
-        ftr  (future
-               (try
-                 (pfn)
-                 (close! ctrl)
-                 (catch Throwable t
-                   (abort! ctrl)
-                   (throw t))))]
-    (async/go
-      (try
-        (let [_ (async/<! (monitor ctrl))]
-          (.cancel ftr true))
-        (catch Throwable e
-          (abort! ctrl)
-          (throw e))))
-
-    ftr))
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;                                                                            ;;
-;;                        ----==| W O R K E R |==----                         ;;
-;;                                                                            ;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(defn reserve!
-  "Reserve next message from the tasks service, with exponential backoff
-  retries. This function will return nil if reservation was not
-  successful after the set number of retries."
-  [taskq topic pid]
-  (safely (task/reserve-task! taskq topic pid)
-    :on-error
-    :tracking :disabled
-    :log-errors false
-    :log-level :debug
-    :log-stacktrace false
-    :default nil))
-
-(defn keepalive-fn!
+(defn- keepalive-fn!
   "Extends lease of task with the given `id` and `pid` with exponential
   backoff retry."
   [taskq id pid]
@@ -216,19 +146,94 @@
                 :task-not-found]))
         true))))
 
-(defn execute!
-  [{:keys [taskq topic pid pfn keepalive-ms timeout-ms]} ctrl task]
-  (keepalive!* ctrl keepalive-ms
-    #(keepalive-fn! taskq (:task-id task) pid))
+(defn- keepalive!*
+  "Spawns a thread that monitors the async pipeline, does regular
+  keepalive pings every `keepalive-ms` by calling the `keepalive-fn`,
+  signals termination by delivering value to a promise and does
+  housekeeping when things go wrong. Returns a record that implements
+  `TaskCtrl`."
+  [ctrl  keepalive-ms keepalive-fn]
+  (let [p (promise)
+        timeout-ms (or keepalive-ms DEFAULT-TASK-KEEPALIVE-TIME)]
+    (async/thread
+      (try
+        (loop [keepalive-chan (async/timeout timeout-ms)]
+          (let [monitor (monitor ctrl)
+                [v c] (async/alts!! [keepalive-chan monitor])]
+            (condp = c
+              monitor  (deliver p v)
+              keepalive-chan (do
+                               (keepalive-fn)
+                               (recur (async/timeout timeout-ms))))))
 
-  (execute!* ctrl
-    (partial (->> pfn
-         wrap-ex
-         (->processor-fn taskq pid))
-      task)))
+        (catch Throwable e
+          (abort! ctrl)
+          (deliver p :failed)
+          (throw e))))
+
+    p))
+
+(defn default-keepalive
+  [{:keys [taskq topic pid keepalive-ms timeout-ms max-poll-interval-ms] :as opts} ctrl task]
+  (keepalive!* ctrl keepalive-ms
+    #(keepalive-fn! taskq (:task-id task) pid)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                                                                            ;;
+;;                      ----==| E X E C U T O R |==----                       ;;
+;;                                                                            ;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(defn- execute!*
+  [ctrl pfn]
+  (let [out-chan (async/chan 1)
+        ftr  (future
+               (try
+                 (pfn)
+                 (close! ctrl)
+                 (catch Throwable t
+                   (abort! ctrl)
+                   (throw t))))]
+    (async/go
+      (try
+        (let [_ (async/<! (monitor ctrl))]
+          (.cancel ftr true))
+        (catch Throwable e
+          (abort! ctrl)
+          (throw e))))
+
+    ftr))
+
+(defn default-executor
+  [pfn]
+  (fn [{:keys [taskq topic pid keepalive-ms timeout-ms max-poll-interval-ms] :as opts} ctrl task]
+    (default-keepalive opts ctrl task)
+
+    (execute!* ctrl
+      (partial (->> pfn
+           wrap-ex
+           (->processor-fn taskq pid))
+        task))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                                                                            ;;
+;;                        ----==| W O R K E R |==----                         ;;
+;;                                                                            ;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(defn- reserve!
+  "Reserve next message from the tasks service, with exponential backoff
+  retries. This function will return nil if reservation was not
+  successful after the set number of retries."
+  [taskq topic pid]
+  (safely (task/reserve-task! taskq topic pid)
+    :on-error
+    :tracking :disabled
+    :log-errors false
+    :log-level :debug
+    :log-stacktrace false
+    :default nil))
 
 (defn- reserve-and-execute!
-  [{:keys [taskq topic pid pfn keepalive-ms timeout-ms max-poll-interval-ms] :as opts}]
+  [{:keys [taskq topic pid executor-fn keepalive-ms timeout-ms max-poll-interval-ms] :as opts}]
   (when-let [{:keys [task-id timeout-ms] :as task}
              (reserve! taskq topic pid)]
     (let [{:keys [timeout-ms] :as opts}
@@ -236,7 +241,8 @@
             timeout-ms (assoc opts :timeout-ms timeout-ms))
           ctrl (default-control timeout-ms)]
       (mu/log :sokka/worker-reserved-task {:task-id task-id :topic topic :pid pid})
-      [ctrl (execute! opts ctrl task)])))
+      (executor-fn opts ctrl task)
+      ctrl)))
 
 (defn- cleanup-leased-tasks!
   [{:keys [taskq monitored-tasks topic lease-time-ms max-poll-interval-ms] :as opts} last-cleanup-time-ms]
@@ -277,7 +283,7 @@
   sleeper function to prevent the worker from flooding the queue with
   requests during inactivity."
   ;;TODO: may be make all times a factor of lease.
-  [{:keys [taskq topic pid pfn lease-time-ms keepalive-ms timeout-ms max-poll-interval-ms] :as opts}]
+  [{:keys [taskq topic pid executor-fn lease-time-ms keepalive-ms timeout-ms max-poll-interval-ms] :as opts}]
   (let [opts (merge opts {:monitored-tasks (agent {})
                           :keepalive-ms (int (* lease-time-ms 0.7))
                           :max-poll-interval-ms lease-time-ms
@@ -297,7 +303,7 @@
                             (mu/log ::heartbeat {})
 
                             (when-not (closed? close-chan)
-                              (let [[ctrl ftr :as reserved] (reserve-and-execute! opts)
+                              (let [ctrl (reserve-and-execute! opts)
                                     ;; this is the best opportunity to
                                     ;; run cleanup (if
                                     ;; max-poll-interval-ms has passed
@@ -307,15 +313,11 @@
                                     ;; have been reserved
                                     last-cleanup-time-ms'
                                     (cleanup-leased-tasks! opts last-cleanup-time-ms)]
-                                (if reserved
+                                (if ctrl
                                   (do
                                     (try
-                                      (deref ftr (+ (:timeout-ms opts) 300)
+                                      (deref ctrl (+ (:timeout-ms opts) 300)
                                         :timed-out)
-                                      (catch Throwable t
-                                        (mu/log ::worker-task-failed
-                                          {:sokka/exception t})
-                                        (abort! ctrl))
                                       (finally
                                         (cleanup! ctrl)))
 

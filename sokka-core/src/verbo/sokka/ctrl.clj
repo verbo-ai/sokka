@@ -13,7 +13,7 @@
 ;;                                                                            ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (defprotocol Control
-  (abort! [this])
+  (abort! [this] [this err-data])
   (close! [this])
   (cleanup! [this])
   (live? [this])
@@ -33,14 +33,14 @@
         timeout-chan (async/timeout timeout-ms)
         p (promise)
         m (async/go
-            (let [[_ c] (async/alts! [timeout-chan abort-chan close-chan])]
+            (let [[v c] (async/alts! [timeout-chan abort-chan close-chan])]
               (condp = c
-                close-chan   @(deliver p :closed)
-                abort-chan   @(deliver p :aborted)
+                close-chan   @(deliver p {:status :closed})
+                abort-chan   @(deliver p (merge v {:status :aborted}))
                 timeout-chan (do
-                               (deliver p :timed-out)
-                               (async/close! abort-chan)
-                               :aborted))))]
+                               (deliver p {:status :aborted
+                                           :err-data {:reason :timed-out}})
+                               (async/close! abort-chan)))))]
     (reify
       clojure.lang.IDeref
       (deref [_] (clojure.core/deref p))
@@ -54,9 +54,15 @@
                     (async/close! close-chan)
                     :closed))
 
-      (abort! [_] (when abort-chan
-                    (async/close! abort-chan)
-                    :aborted))
+      (abort! [this]
+        (abort! this {:reason :unknown}))
+
+      (abort! [_ err-data]
+        (when abort-chan
+          (async/go
+            (async/offer! abort-chan err-data)
+            (async/close! abort-chan))
+          :aborted))
 
       (cleanup! [this]
         (close! this)
