@@ -263,21 +263,21 @@
   argument. It also spins up a sidecar thread (keepalive) to extend
   the lease of the task periodically, while pfn is being executed.
 
-  `processor-fn` - should accept task as an argument, perform thecleanup-leased-tasks
-  operation corresponding to the task and return a tuple containing
-  [event-name opts]. valid event-names and args are:
-  [:sokka/completed nil], [:sokka/failed, {:keys [error-message]}]
-  [:sokka/snoozed, {:keys [snooze-time]}].
+  `executor-fn` - executor is a function that carries out the task
+  that the worker reserves. Along with the actual task, this function
+  should also ensure that the lease of the task is kept up to date and
+  also update the status of the task depending on the result of the
+  execution. The worker will pass the `opts` map with all the defaults
+  populated to the executor-fn, the ctrl, and the task which was
+  reserved as arguments.
 
-  ; keepalive-ms  - keepalive timeout, will be lease-time * 0.7
-  ; task-timeout - how long do we expect the task to run. this can be
+  `keepalive-ms` - keepalive timeout, will be lease-time * 0.7
+
+  `task-timeout` - how long do we expect the task to run. this can be
   overridden at the task level, but set at the worker level
 
-  The worker will wait until `worker-timeout-ms` has passed
-  for the task to complete, if the task isn't complete by then, it
-  closes the task, acknowledges the task with status = :failed and
-  carries on. If the task completes successfully, it acknowledges the
-  task with status = :ok and carries on.
+  `timeout-ms` - Time in ms after which the task will be interrupted
+  and marked as failed.
 
   The worker polls for tasks using an exponentially increasing
   sleeper function to prevent the worker from flooding the queue with
