@@ -64,14 +64,14 @@
         (finally
           (ctrl/cleanup! ctrl)))))
 
-  (fact "aborts ctrl when there is an exception"
+  (fact "closes ctrl when keepalive fails"
     (let [ctrl (ctrl/default-control (* 1 60 1000))
           p    (keepalive!* ctrl 100 #(throw (ex-info "kaboom!" {})))]
       (try
         (fact "completes gracefully"
           (deref p 600 :didnt-complete) => :failed)
         (fact "aborts ctrl"
-          @ctrl => (contains {:status :aborted}))
+          @ctrl => (contains {:status :closed}))
         (finally
           (ctrl/cleanup! ctrl))))))
 

@@ -157,10 +157,10 @@
     (async/thread
       (try
         (loop [keepalive-chan (async/timeout timeout-ms)]
-          (let [monitor (as-chan ctrl)
-                [v c] (async/alts!! [keepalive-chan monitor])]
+          (let [ctrl-chan (as-chan ctrl)
+                [v c] (async/alts!! [keepalive-chan ctrl-chan])]
             (condp = c
-              monitor  (deliver p v)
+              ctrl-chan  (deliver p v)
               keepalive-chan (do
                                (keepalive-fn)
                                (recur (async/timeout timeout-ms))))))

@@ -34,7 +34,7 @@
         timeout-chan (async/timeout timeout-ms)
         p (promise)
         m (async/go
-            (let [[v c] (async/alts! [timeout-chan #_abort-chan close-chan])]
+            (let [[v c] (async/alts! [timeout-chan abort-chan close-chan])]
               (condp = c
                 close-chan   @(deliver p {:status :closed})
                 abort-chan   @(deliver p (merge v {:status :aborted}))
