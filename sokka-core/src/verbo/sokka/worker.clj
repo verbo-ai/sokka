@@ -124,18 +124,17 @@
   (safely
       (task/extend-lease! taskq id pid)
     :on-error
-    ;;hardcoding the retry settings for sake of
-    ;;simplicity. something to do later. Intentionally setting
-    ;;max-retry to a finite number. After the retries are
-    ;;exhausted, the exception will be thrown,triggering an
-    ;;abort.
+    ;;hardcoding the retry settings for sake of simplicity. something
+    ;;to do later. Intentionally setting max-retry to a finite
+    ;;number. After the retries are exhausted, the ctrl will be closed
+    ;;to shutdown the execution.
     :max-retries 3
     :retry-delay [:random-exp-backoff :base 300 :+/- 0.50]
     :log-level :warn
     :tracking :disabled
     ;;do not retry when the exception is one of [:lease-expired
     ;;:wrong-owner :already-acknowledged :no-messages-found].
-    ;;this will throw the exception back triggering an abort.
+    ;;this will throw the exception back.
     :retryable-error?
     (fn [e]
       (if-let [{:keys [error]} (ex-data e)]
@@ -158,7 +157,7 @@
     (async/thread
       (try
         (loop [keepalive-chan (async/timeout timeout-ms)]
-          (let [monitor (monitor ctrl)
+          (let [monitor (as-chan ctrl)
                 [v c] (async/alts!! [keepalive-chan monitor])]
             (condp = c
               monitor  (deliver p v)
@@ -167,7 +166,8 @@
                                (recur (async/timeout timeout-ms))))))
 
         (catch Throwable e
-          (abort! ctrl)
+          ;; only warn if error: :invalid-status
+          (close! ctrl)
           (deliver p :failed)
           (throw e))))
 
@@ -191,14 +191,15 @@
                  (pfn)
                  (close! ctrl)
                  (catch Throwable t
+                   ;; execution failed, so abort! rather than close!
                    (abort! ctrl)
                    (throw t))))]
     (async/go
       (try
-        (let [_ (async/<! (monitor ctrl))]
+        (let [_ (async/<! (as-chan ctrl))]
           (.cancel ftr true))
         (catch Throwable e
-          (abort! ctrl)
+          (close! ctrl)
           (throw e))))
 
     ftr))

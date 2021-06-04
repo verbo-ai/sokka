@@ -56,6 +56,7 @@
       :log-level :debug
       :tracking :enabled
       :log-stacktrace true
+      ;; TODO: seems to retry for concurrent modification exception as well - fix this.
       :retryable-error? (fn [e] (some-> e ex-data :type (= :throttling-exception)))
       :retry-delay [:random-exp-backoff :base 500 :+/- 0.50])
     :on-error
