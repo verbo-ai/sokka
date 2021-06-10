@@ -39,11 +39,7 @@
    :task-scan-index "task-scan-index"
    ;; index name used to query tasks by task-group-id
    :task-group-index "task-group-index"
-
-   ;; The default reservation lease time in millis.
-   ;; After this time the reserved item, if not acknowledged,
-   ;; will be available to grant reservation to other processes.
-   :lease-time DEFAULT_LEASE_TIME
+   :lease-time (* 2 60 1000)
    :snooze-time DEFAULT_LEASE_TIME})
 
 (defn ddb-rec->m
@@ -93,7 +89,8 @@
                {:AttributeName "__topic-scan-hkey" :AttributeType "S"}
                {:AttributeName "__topic-scan-rkey" :AttributeType "S"}
                {:AttributeName "task-group-id" :AttributeType "S"}
-               {:AttributeName "__reserv-key" :AttributeType "S"}]
+               {:AttributeName "__reserv-key" :AttributeType "S"}
+               {:AttributeName "created-at"   :AttributeType "S"}]
               ;; billing mode
               :BillingMode "PAY_PER_REQUEST"
               ;; indexes
@@ -105,7 +102,7 @@
                (cond-> {:IndexName task-group-index
                         :KeySchema
                         [{:AttributeName "task-group-id" :KeyType "HASH"}
-                         {:AttributeName "task-id" :KeyType "RANGE"}]
+                         {:AttributeName "created-at" :KeyType "RANGE"}]
                         :Projection {:ProjectionType "ALL"}}
                  throughput-provisioned?
                  (assoc :ProvisionedThroughPut
@@ -171,15 +168,34 @@
     (update :status keyword)
     (update :data (comp u/deserialize u/base64->bytes))))
 
+(def returnable-keys
+  [:task-id
+   :task-group-id
+   :topic
+   :sub-topic
+   :data
+   :status
+   :pid
+   :record-ver
+   :error
+   :snooze-time
+   :created-at
+   :updated-at])
+
+(defn- sort-keys
+  [task]
+  (->> (map (juxt identity #(get task %)) returnable-keys)
+    (apply concat)
+    (apply array-map)))
+
 (defn- ->returnable-item
   "removes internal/synthetic attributes from the task record"
   [task]
-  (dissoc task
-    :__topic-key
-    :__topic-scan-hkey
-    :__topic-scan-rkey
-    :__reserv-key
-    :record-ver))
+  (-> task
+    (update :created-at #(Long/valueOf %))
+    (update :updated-at #(Long/valueOf %))
+    (select-keys returnable-keys)
+    (sort-keys)))
 
 (def status-flags*
   {:failed 400 :terminated 300 :running 200 :snoozed 150 :starting 100})
@@ -195,25 +211,27 @@
 
 (defn- ->topic-key
   "construct `__topic-key` from the supplied topic and status"
-  [topic status]
-  (format "%s%020d"
-    topic
-    (if (#{:terminated :failed} status)
-      (u/now)
-      0)))
+  ([topic status]
+   (->topic-key (u/now) topic status))
 
-(defn- ->topic-scan-hkey*
-  "construct `__topic-scan-hkey` from the given timestamp and topic"
-  [now topic]
-  (format "%s:%s:%02d"
-    topic
-    (t/year now)
-    (t/week-number-of-year now)))
+  ([now topic status]
+   (format "%s%020d"
+     topic
+     (if (#{:terminated :failed} status)
+       now
+       0))))
 
 (defn- ->topic-scan-hkey
   "construct `__topic-scan-hkey` for the given topic with current time"
-  [topic]
-  (->topic-scan-hkey* (tc/from-long (u/now)) topic))
+  ([topic]
+   (->topic-scan-hkey (u/now) topic))
+
+  ([now topic]
+   (let [now-d (tc/from-long now)]
+     (format "%s:%s:%02d"
+       topic
+       (t/year now-d)
+       (t/week-number-of-year now-d)))))
 
 (defn- ->topic-scan-rkey*
   ([sub-topic status-flag]
@@ -230,25 +248,26 @@
 (defn- ->topic-scan-rkey
   "construct `__topic-scan-rkey` for the given sub-topic and status and
   current time"
-  [sub-topic status-flag]
-  (->topic-scan-rkey* (u/now) sub-topic status-flag))
+  [now sub-topic status-flag]
+  (->topic-scan-rkey* now sub-topic status-flag))
 
 (defn- inject-derived-attributes
   "Ensure that synthetic attributes are always present with the correct value"
   [{:keys [status sub-topic topic lease pid] :or {lease 0} :as task}]
-  (as-> task $
-    ;; ver is used for Multiversion Concurrency Control and optimistic lock
-    (update $ :record-ver (fnil inc 0))
-    ;; ensure that lease is always populated
-    (update $ :lease (fnil identity 0))
-    ;; ensure that status is populated
-    (update $ :status (fnil identity :starting))
-    (assoc $ :__topic-key (->topic-key topic status))
-    (assoc $ :__topic-scan-hkey (->topic-scan-hkey topic))
-    (assoc $ :__topic-scan-rkey (->topic-scan-rkey sub-topic (status-flags $)))
-    ;; __reserv_key is used for adding item which can be reserved to
-    ;; the appropriate index (reservation-index).
-    (assoc $ :__reserv-key (format "%03d%020d" (status-flags $) lease))))
+  (let [now (u/now)]
+    (as-> task $
+      ;; ver is used for Multiversion Concurrency Control and optimistic lock
+      (update $ :record-ver (fnil inc 0))
+      (update $ :created-at (fnil identity (format "%020d" now)))
+      (assoc $ :updated-at (format "%020d" now))
+      ;; ensure that status is populated
+      (update $ :status (fnil identity :starting))
+      (assoc $ :__topic-key (->topic-key now topic status))
+      (assoc $ :__topic-scan-hkey (->topic-scan-hkey now topic))
+      (assoc $ :__topic-scan-rkey (->topic-scan-rkey now sub-topic (status-flags $)))
+      ;; __reserv_key is used for adding item which can be reserved to
+      ;; the appropriate index (reservation-index).
+      (assoc $ :__reserv-key (format "%03d%020d" (status-flags $) lease)))))
 
 (defn- safe-put-item
   "This function uses MVCC to ensure that updates are not conflicting
@@ -352,7 +371,7 @@
     (map parse-task*)))
 
 (defn- list-tasks-by-topic-scan-hkey
-  "see: ->topic-scan-hkey*"
+  "see: ->topic-scan-hkey"
   [{:keys [ddb tasks-table task-scan-index]}
    {:keys [sub-topic status from to] :as filters}
    hk
@@ -385,7 +404,7 @@
    {:keys [topic sub-topic status from to] :as filters}
    {:keys [inner-cursor limit next-period] :as cursor}]
   (when-not (= next-period -1)
-    (let [hkeys (map #(->topic-scan-hkey* % topic)
+    (let [hkeys (map #(->topic-scan-hkey % topic)
                   (tp/periodic-seq
                     (-> from tc/from-long)
                     (-> to   tc/from-long (t/plus (t/weeks 1)))
@@ -455,32 +474,22 @@
                   :type :forbidden
                   :your-pid pid
                   :task-pid (:pid task)
-                  :task task})))
-
-      (when (and (= pid (:pid task)) (> (now) (:lease task)))
-        (throw (ex-info "Lease expired."
-                 {:error :lease-expired
-                  :type :forbidden
-                  :your-pid pid
-                  :task-pid (:pid task)
                   :task task}))))
 
 
     (cond-> (assoc task :status target-status)
       (or  (= target-status :starting) (= target-status :terminated))
-      (-> (assoc :lease 0) (dissoc :pid))
+      (dissoc :pid)
 
       (= target-status :failed)
       (assoc :error (or error ""))
 
       (= target-status :snoozed)
-      (-> (assoc :snooze-time (or snooze-time (:snooze-time this))
-                 :lease (+ (now) (or snooze-time (:snooze-time this))))
+      (-> (assoc :snooze-time (or snooze-time (:snooze-time this)))
         (dissoc :pid))
 
       :default
-      (->> (safe-put-item this)
-        ->returnable-item))))
+      (->> (safe-put-item this)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                                                                            ;;
@@ -498,8 +507,8 @@
                        (update :task-group-id (fnil identity task-id))
                        (assoc :sub-topic (or sub-topic "default")
                               :status :starting))]
-        (safe-put-item this task-def)
-        task-def)
+        (-> (safe-put-item this task-def)
+          ->returnable-item))
       (catch Exception e
         (if (dyn-exception= e #"com.amazonaws.dynamodb.*?ConditionalCheckFailedException")
           (do (log/debug e "create-task! failed - task already exists")
@@ -516,7 +525,7 @@
     (->> task-group-id
       str
       (get-tasks-by-task-group-id this)
-      (map ->returnable-item)))
+      (mapv ->returnable-item)))
 
   (reserve-task! [this topic pid]
     (let [task (first (find-reservable-tasks this topic (now) 1))
@@ -526,8 +535,8 @@
         (-> (safe-put-item this
               (assoc task
                 :status :running
-                :pid  pid
-                :lease (+ (now) lease-time)))))))
+                :pid  pid))
+          ->returnable-item))))
 
   (extend-lease! [this task-id pid]
     (let [task (get-task-by-id this task-id)
@@ -554,38 +563,38 @@
                   :task-pid (:pid task)
                   :task task})))
 
-      (when (and (= pid (:pid task)) (> (now) (:lease task)))
-        (throw (ex-info "Lease expired."
-                 {:error :lease-expired
-                  :type :forbidden
-                  :your-pid pid
-                  :task-pid (:pid task)
-                  :task task})))
 
       ;; extending the lease expiration time
-      (safe-put-item this
-        (update task :lease (fn [ol] (max ol (+ (now) lease-time)))))
+      (safe-put-item this task)
       :ok))
 
   (revoke-lease! [this task-id record-ver]
-    (update-status! this task-id :starting nil {:record-ver record-ver}))
+    (-> (update-status! this task-id :starting nil {:record-ver record-ver})
+      ->returnable-item))
 
   (list-tasks [this {:keys [topic from to sub-topic] :as filters} {:keys [limit] :as cursor}]
-    (list-tasks* this filters  cursor))
+    (-> (list-tasks* this filters cursor)
+      (update :data #(mapv ->returnable-item %))))
 
   (terminate! [this task-id pid]
-    (update-status! this task-id :terminated pid {}))
+    (-> (update-status! this task-id :terminated pid {})
+      ->returnable-item))
 
   (snooze! [this task-id pid snooze-time]
-    (update-status! this task-id :snoozed pid {:snooze-time snooze-time}))
+    (-> (update-status! this task-id :snoozed pid
+                        {:snooze-time snooze-time})
+      ->returnable-item))
 
   (fail! [this task-id pid error]
-    (update-status! this task-id :failed pid {:error (str error)}))
+    (-> (update-status! this task-id :failed pid
+                        {:error (str error)})
+      ->returnable-item))
 
   LeaseSupervision
 
   (list-leased-tasks [this topic cursor]
-    (find-running-and-snoozed-tasks this topic cursor)))
+    (-> (find-running-and-snoozed-tasks this topic cursor)
+      (update :data #(mapv ->returnable-item %)))))
 
 (defn- with-default-errors
   [f & args]

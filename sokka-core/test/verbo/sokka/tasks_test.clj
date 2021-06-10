@@ -87,9 +87,7 @@
         (fact "sets status of reserved task to running"
           (:status reserved) => :running)
         (fact "sets pid of reserved task to pid supplied"
-          (:pid reserved) => pid)
-        (fact "sets lease to current-time + lease-time"
-          (:lease reserved) => (+ ctime lease-time)))
+          (:pid reserved) => pid))
 
       (let [task-def (new-task topic)
             {:keys [task-id]} (task/create-task! taskq task-def)]
@@ -152,21 +150,6 @@
               {:keys [task-id]} (task/reserve-task! taskq topic pid)]
           (task/extend-lease! taskq task-id (u/rand-id)) =>
           (throws #(= :wrong-owner (-> % ex-data :error)))))
-      (fact "throws :lease-expired when lease of the task is already expired"
-        (let [_          (task/create-task! taskq (new-task topic))
-              {:keys [task-id]} (task/reserve-task! taskq topic pid)
-              lease-time lease-time
-              later (+ (u/now) (* 2 lease-time))]
-          (with-redefs [u/now (constantly later)]
-            (task/extend-lease! taskq task-id pid)) =>
-          (throws (h/error= :forbidden :lease-expired))))
-      (fact "extends lease to current-time + lease_time"
-        (let [_          (task/create-task! taskq (new-task topic))
-              {:keys [task-id lease]} (task/reserve-task! taskq topic pid)
-              ctime (u/now)]
-          (with-redefs [u/now (constantly ctime)]
-            (task/extend-lease! taskq task-id pid)) => :ok
-          (:lease (task/task taskq task-id)) => (+ ctime lease-time )))
       (fact "returns :ok when successful"
         (let [_          (task/create-task! taskq (new-task topic))
               {:keys [task-id]} (task/reserve-task! taskq topic pid)]
@@ -192,7 +175,6 @@
       (let [{:keys [task-id]} (task/create-task! taskq (new-task topic))]
         (fact "snoozed tasks cannot be reserved until the snooze time is elapsed"
           (task/reserve-task! taskq topic pid)
-
           (task/snooze! taskq task-id pid 30000)
           (:status (task/task taskq task-id)) => :snoozed
           (task/reserve-task! taskq topic pid) => nil)
@@ -201,7 +183,6 @@
           (let [task (task/task taskq task-id)]
             (task/revoke-lease! taskq task-id (:record-ver task))
             (:task-id (task/reserve-task! taskq topic (u/rand-id))) => task-id))))))
-
 
 (defn test-list-tasks
   [{:keys [lease-time]} taskq]

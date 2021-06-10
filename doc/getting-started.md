@@ -113,4 +113,4 @@ Add the necessary requires:
 ```
 
 For a list of all available functions to query tasks, see:
-(/d/net.clojars.sathyavijayan/sokka/CURRENT/api/verbo.sokka.task#TaskStore)[TaskStore]
+(d/ai.verbo/sokka/0.0.1-alpha1/api/verbo.sokka.task#TaskStore)[TaskStore]
