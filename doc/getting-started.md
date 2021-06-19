@@ -16,7 +16,7 @@ DynamoDB implementation and that you are using [dynamodb-local](https://docs.aws
 Add sokka to your `project.clj`:
 
 ``` clojure
-[ai.verbo/sokka "0.1.0-alpha1"]
+[ai.verbo/sokka "0.1.0-alpha2"]
 ```
 
 Add the necessary requires:
@@ -112,5 +112,4 @@ Add the necessary requires:
   {:limit 100})
 ```
 
-For a list of all available functions to query tasks, see:
-(d/ai.verbo/sokka/0.0.1-alpha1/api/verbo.sokka.task#TaskStore)[TaskStore]
+For a list of all available functions to query tasks, see documentation for TaskStore.

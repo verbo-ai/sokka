@@ -297,7 +297,7 @@
          :ExpressionAttributeNames
          {"#curver" "record-ver"}
          :ExpressionAttributeValues
-         {":oldver" {:N record-ver}}}))
+         {":oldver" {:N (str record-ver)}}}))
     item'))
 
 (defn- find-reservable-tasks
