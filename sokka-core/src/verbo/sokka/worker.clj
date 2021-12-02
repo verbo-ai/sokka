@@ -285,10 +285,11 @@
   requests during inactivity."
   ;;TODO: may be make all times a factor of lease.
   [{:keys [taskq topic pid executor-fn lease-time-ms keepalive-ms timeout-ms max-poll-interval-ms] :as opts}]
-  (let [opts (merge opts {:monitored-tasks (agent {})
-                          :keepalive-ms (int (* lease-time-ms 0.7))
-                          :max-poll-interval-ms lease-time-ms
-                          :timeout-ms (* 2 lease-time-ms)})
+  (let [opts (merge {:monitored-tasks (agent {})
+                     :keepalive-ms (int (* lease-time-ms 0.7))
+                     :max-poll-interval-ms lease-time-ms
+                     :timeout-ms (* 5 lease-time-ms)}
+               opts)
         close-chan  (async/chan 1)
         p           (promise)
         proc        (future
